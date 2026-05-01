@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap");
+
+:root {
+  --fpl-green: #00ff85;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #0d0d0d;
+  color: #e5e7eb;
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #161616;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00ff85;
+}
+
+/* FDR color classes */
+.fdr-1 { background-color: #00a650; color: #000; }
+.fdr-2 { background-color: #7ec375; color: #000; }
+.fdr-3 { background-color: #c8c8c8; color: #000; }
+.fdr-4 { background-color: #e05a5a; color: #fff; }
+.fdr-5 { background-color: #8b0000; color: #fff; }
+
+/*
+  Defensive hide for stale client bundles that still render a fourth
+  "One caution flag" card in the dashboard signals row.
+*/
+main > div.space-y-8 > section:nth-of-type(2) > div.grid > div:nth-child(4) {
+  display: none;
+}

@@ -1,0 +1,16 @@
+backend/__pycache__/
+backend/.pytest_cache/
+backend/fpl_copilot.db
+backend/.env
+backend/reports/artifacts/
+backend/reports/latest_predictions.json
+backend/reports/latest_evaluation.json
+backend/venv/
+frontend/.next/
+frontend/.env.local
+frontend/node_modules/
+*.pyc
+*.tsbuildinfo
+.DS_Store
+AGENTS.md
+gitdata/

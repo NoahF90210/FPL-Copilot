@@ -1,0 +1,42 @@
+name: Daily Data Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 9 * * *"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      APP_ENV: production
+      REPORTS_DIR: backend/reports
+      MODEL_ARTIFACT_PATH: backend/reports/artifacts/latest_model.joblib
+      EVALUATION_REPORT_PATH: backend/reports/latest_evaluation.json
+      LATEST_PREDICTIONS_PATH: backend/reports/latest_predictions.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Initialize warehouse schema
+        working-directory: backend
+        run: python scripts/init_db.py
+      - name: Run ingestion pipeline
+        working-directory: backend
+        run: python scripts/run_pipeline.py
+      - name: Train and score latest model
+        working-directory: backend
+        run: python scripts/train_model.py
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpl-copilot-reports
+          path: |
+            backend/reports/latest_evaluation.json
+            backend/reports/latest_evaluation.md
+            backend/reports/latest_predictions.json

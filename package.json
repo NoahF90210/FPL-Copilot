@@ -1,0 +1,9 @@
+{
+  "name": "fpl-copilot-workspace",
+  "private": true,
+  "scripts": {
+    "app:start": "bash scripts/app-start.sh",
+    "app:reset": "bash scripts/app-start.sh --rebuild",
+    "app:dev": "bash scripts/app-start.sh --dev"
+  }
+}
