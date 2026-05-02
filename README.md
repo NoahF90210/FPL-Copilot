@@ -9,6 +9,12 @@ FPL Copilot is a Fantasy Premier League app that combines model-driven player pr
 - compares your current squad with optimizer suggestions
 - highlights captaincy, differentials, and fixture-led picks
 
+## Preview
+
+- Dashboard: weekly recommendations, model freshness, and saved squad insights
+- My Squad: saved lineup, bench order, captaincy, and rule-aware squad checks
+- Optimizer: transfer-aware squad comparisons with points-hit context
+
 ## Tech Stack
 
 - `FastAPI` backend
@@ -23,6 +29,20 @@ FPL Copilot is a Fantasy Premier League app that combines model-driven player pr
 3. Train models and save predictions
 4. Serve the latest outputs through the API
 5. Render the dashboard and squad tools in the frontend
+
+## Modeling
+
+- Baseline model: Ridge regression
+- Main model: HistGradientBoostingRegressor
+- Inputs: rolling form, minutes, BPS, ICT index, expected goal involvements, price, ownership, position, and fixture difficulty
+- Evaluation: MAE, RMSE, and time-based validation over recent gameweeks
+
+## What To Look At
+
+- `Model status` on the homepage and about page for freshness and evaluation data
+- `Players` for ranked predictions and fixture context
+- `My Squad` for saved-team logic and rule-aware lineup handling
+- `Optimizer` for transfer-aware comparisons, free-transfer handling, and hit-aware planning
 
 ## Main Pages
 
