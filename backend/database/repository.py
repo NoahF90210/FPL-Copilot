@@ -61,6 +61,7 @@ def latest_pipeline_run(session: Session, run_type: str | None = None) -> Pipeli
     stmt: Select[tuple[PipelineRun]] = select(PipelineRun).order_by(desc(PipelineRun.started_at))
     if run_type:
         stmt = stmt.where(PipelineRun.run_type == run_type)
+    stmt = stmt.limit(1)
     return session.execute(stmt).scalar_one_or_none()
 
 
@@ -69,6 +70,7 @@ def latest_prediction_metadata(session: Session) -> ModelPrediction | None:
         desc(ModelPrediction.prediction_timestamp),
         desc(ModelPrediction.target_gameweek),
     )
+    stmt = stmt.limit(1)
     return session.execute(stmt).scalar_one_or_none()
 
 
