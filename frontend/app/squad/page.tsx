@@ -55,7 +55,7 @@ export default function SquadPage() {
         setPlayers(available);
       } catch (e: any) {
         setPlayers([]);
-        setError(e.message || "Unable to load player predictions right now.");
+        setError(e.message || "Unable to load player predictions right now. Try again shortly.");
       } finally {
         setLoading(false);
       }

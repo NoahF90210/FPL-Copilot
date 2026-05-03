@@ -6,6 +6,7 @@ backend/reports/artifacts/
 backend/reports/latest_predictions.json
 backend/reports/latest_evaluation.json
 backend/venv/
+backend/mlruns/
 frontend/.next/
 frontend/.env.local
 frontend/node_modules/

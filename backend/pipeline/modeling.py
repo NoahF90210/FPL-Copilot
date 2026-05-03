@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,15 @@ from core.config import get_settings
 from database.models import Fixture, ModelPrediction, Player, PlayerGameweekStat, Team
 from database.repository import save_json_report, save_pipeline_run
 
+try:
+    import mlflow
+    import mlflow.sklearn
+except ImportError:  # pragma: no cover - optional dependency in constrained environments
+    mlflow = None
+
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 MODEL_VERSION = "hist_gradient_boosting_v1"
 BASELINE_VERSION = "ridge_baseline_v1"
 FEATURE_COLUMNS = [
@@ -277,6 +285,69 @@ def _write_markdown_report(report: dict[str, Any]) -> None:
     report_path.write_text(markdown)
 
 
+def _log_training_run_to_mlflow(
+    *,
+    report: dict[str, Any],
+    target_gameweek: int,
+    saved_predictions: list[dict[str, Any]],
+    model_pipeline: Pipeline,
+    baseline_pipeline: Pipeline,
+) -> None:
+    if mlflow is None:
+        logger.warning("MLflow is not installed, so experiment tracking will be skipped.")
+        return
+
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    mlflow.set_experiment(settings.mlflow_experiment_name)
+
+    run_name = f"gw-{target_gameweek}-training-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+    with mlflow.start_run(run_name=run_name):
+        mlflow.set_tags(
+            {
+                "app": "fpl-copilot",
+                "app_env": settings.app_env,
+                "model_version": MODEL_VERSION,
+                "baseline_version": BASELINE_VERSION,
+            }
+        )
+        mlflow.log_params(
+            {
+                "feature_count": len(FEATURE_COLUMNS),
+                "validation_start_gameweek": min(report["validation_gameweeks"]),
+                "validation_end_gameweek": max(report["validation_gameweeks"]),
+                "training_rows": report["training_rows"],
+                "validation_rows": report["validation_rows"],
+                "target_gameweek": target_gameweek,
+                "saved_predictions": len(saved_predictions),
+                "baseline_model_type": "Ridge",
+                "baseline_alpha": 1.0,
+                "main_model_type": "HistGradientBoostingRegressor",
+                "main_learning_rate": 0.05,
+                "main_max_depth": 6,
+                "main_max_iter": 250,
+                "main_random_state": 42,
+            }
+        )
+        mlflow.log_metrics(
+            {
+                "baseline_mae": report["baseline"]["mae"],
+                "baseline_rmse": report["baseline"]["rmse"],
+                "model_mae": report["model"]["mae"],
+                "model_rmse": report["model"]["rmse"],
+            }
+        )
+
+        mlflow.sklearn.log_model(baseline_pipeline, name="baseline")
+        mlflow.sklearn.log_model(model_pipeline, name="main")
+        mlflow.log_artifact(str(settings.model_artifact_path), artifact_path="artifacts")
+        mlflow.log_artifact(str(settings.evaluation_report_path), artifact_path="reports")
+        markdown_report_path = settings.reports_dir / "latest_evaluation.md"
+        if markdown_report_path.exists():
+            mlflow.log_artifact(str(markdown_report_path), artifact_path="reports")
+        if settings.latest_predictions_path.exists():
+            mlflow.log_artifact(str(settings.latest_predictions_path), artifact_path="reports")
+
+
 def train_and_score(session: Session) -> dict[str, Any]:
     started_at = datetime.utcnow()
     training_df = _build_training_dataframe(session)
@@ -402,6 +473,13 @@ def train_and_score(session: Session) -> dict[str, Any]:
             "model_version": MODEL_VERSION,
             "predictions": saved_predictions,
         },
+    )
+    _log_training_run_to_mlflow(
+        report=report,
+        target_gameweek=target_gameweek,
+        saved_predictions=saved_predictions,
+        model_pipeline=model_pipeline,
+        baseline_pipeline=baseline_pipeline,
     )
 
     save_pipeline_run(

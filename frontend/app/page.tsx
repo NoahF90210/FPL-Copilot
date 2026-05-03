@@ -91,10 +91,10 @@ export default function HomePage() {
 
         if (failures.length === requests.length) {
           setError(
-            "Live recommendations are still warming up. Start the backend on port 8000, then refresh to unlock predictions."
+            "Live recommendations are temporarily unavailable. Saved outputs will appear where possible while the latest refresh catches up."
           );
         } else if (failures.length > 0) {
-          setError("Some live recommendations could not load, so this page is showing whatever was available.");
+          setError("Some live recommendations could not load, so this page is showing the best available snapshot.");
         }
       } catch {
         setError("The gameweek hub could not load live data right now.");
@@ -396,7 +396,7 @@ export default function HomePage() {
                 ? `Ready for GW ${currentGameweek}`
                 : modelStatus?.latest_prediction_timestamp
                   ? "Saved prediction snapshot available"
-                  : "Waiting for the latest scoring run"
+                  : "Waiting for the next scoring run"
             }
           />
           <TrustStat

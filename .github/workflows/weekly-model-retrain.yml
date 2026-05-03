@@ -1,9 +1,7 @@
-name: Weekly Model Retrain
+name: Manual Model Retrain
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 10 * * 1"
 
 jobs:
   retrain:
@@ -16,8 +14,8 @@ jobs:
       EVALUATION_REPORT_PATH: backend/reports/latest_evaluation.json
       LATEST_PREDICTIONS_PATH: backend/reports/latest_predictions.json
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install backend dependencies

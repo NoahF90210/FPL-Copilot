@@ -27,10 +27,11 @@ from models.predictor import predict_players
 app = FastAPI(title="FPL Copilot API", version="2.0.0")
 logger = logging.getLogger(__name__)
 STARTUP_DB_ERROR: str | None = None
+cors_origins = list(settings.allowed_origins) or []
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

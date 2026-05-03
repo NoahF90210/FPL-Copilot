@@ -60,7 +60,7 @@ export default function PlayersPage() {
       } catch (e: any) {
         setPlayers([]);
         setPredictions({});
-        setError(e.message || "Unable to load player data right now.");
+        setError(e.message || "Unable to load player data right now. Try again shortly.");
       } finally {
         setLoading(false);
       }

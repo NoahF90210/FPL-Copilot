@@ -38,7 +38,7 @@ export default function AboutModelPage() {
         setError(null);
         setStatus(await fetchJson<ModelStatus>("/api/model-status"));
       } catch (err: any) {
-        setError(err.message || "Unable to load model details right now.");
+        setError(err.message || "Unable to load model details right now. The rest of the app can still be explored.");
       }
     }
 
