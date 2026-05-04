@@ -2,6 +2,8 @@
 
 FPL Copilot is a Fantasy Premier League app that combines model-driven player projections, squad planning, and transfer-aware optimization.
 
+https://fpl-copilot.tech/players
+
 ## What It Does
 
 - shows weekly player predictions and model freshness
