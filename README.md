@@ -21,12 +21,12 @@ Fantasy Premier League decisions are messy: fixtures, ownership, budget, captain
 ## Screenshots
 
 <p>
-  <img src="docs/screenshots/dashboard.png" alt="FPL Copilot dashboard" width="100%" />
+  <img src="docs/screenshots/dashboard.jpg" alt="FPL Copilot dashboard" width="100%" />
 </p>
 
 | Player Predictions | Transfer Optimizer |
 |---|---|
-| <img src="docs/screenshots/players.png" alt="FPL Copilot players page" width="100%" /> | <img src="docs/screenshots/optimizer.png" alt="FPL Copilot optimizer" width="100%" /> |
+| <img src="docs/screenshots/players.jpg" alt="FPL Copilot players page" width="100%" /> | <img src="docs/screenshots/optimizer.jpg" alt="FPL Copilot optimizer" width="100%" /> |
 
 ## Tech Stack
 
