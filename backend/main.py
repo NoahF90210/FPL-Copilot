@@ -65,7 +65,26 @@ def _load_local_prediction_snapshot() -> dict | None:
     return json.loads(path.read_text())
 
 
+def _load_demo_dashboard_snapshot() -> dict | None:
+    path = settings.reports_dir / "dashboard-demo-data.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def _load_demo_predictions() -> list[dict]:
+    snapshot = _load_demo_dashboard_snapshot()
+    if not snapshot:
+        return []
+    players = snapshot.get("playerPool")
+    return players if isinstance(players, list) else []
+
+
 def _load_local_predictions() -> list[dict]:
+    demo_predictions = _load_demo_predictions()
+    if demo_predictions:
+        return demo_predictions
+
     snapshot = _load_local_prediction_snapshot()
     fallback_players = predict_players()
     if not snapshot:
@@ -90,6 +109,14 @@ def _load_local_predictions() -> list[dict]:
 
 
 def _fallback_model_status() -> dict:
+    demo_snapshot = _load_demo_dashboard_snapshot()
+    if demo_snapshot and isinstance(demo_snapshot.get("modelStatus"), dict):
+        return {
+            **demo_snapshot["modelStatus"],
+            "database_status": "degraded",
+            "database_error": STARTUP_DB_ERROR,
+        }
+
     snapshot = _load_local_prediction_snapshot() or {}
     report = load_evaluation_report() or {}
     saved_predictions = len(snapshot.get("predictions", []))

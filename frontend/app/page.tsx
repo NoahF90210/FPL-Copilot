@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import PlayerCard from "@/components/PlayerCard";
+import demoDashboardData from "@/lib/dashboard-demo-data.json";
 import { fetchJson } from "@/lib/api";
 import {
   deriveTeamState,
@@ -25,18 +26,19 @@ interface Player extends FplPlayer {
   confidence: string;
   captain_score?: number;
   captain_reasoning?: string;
+  target_gameweek?: number;
 }
 
 interface ModelStatus {
   latest_ingestion_run?: {
     completed_at?: string | null;
     status?: string;
-    rows_inserted?: number;
+    rows_inserted?: number | null;
   } | null;
   latest_training_run?: {
     completed_at?: string | null;
     status?: string;
-    rows_inserted?: number;
+    rows_inserted?: number | null;
   } | null;
   latest_prediction_timestamp?: string | null;
   latest_prediction_gameweek?: number | null;
@@ -52,58 +54,91 @@ interface ModelStatus {
   database_error?: string | null;
 }
 
+type DashboardDemoData = {
+  gameweek: number;
+  topPlayers: Player[];
+  differentials: Player[];
+  captains: Player[];
+  playerPool: Player[];
+  modelStatus: ModelStatus;
+};
+
+const DASHBOARD_SNAPSHOT = demoDashboardData as DashboardDemoData;
+const DASHBOARD_GAMEWEEK = 37;
+const DASHBOARD_REFRESH_TIMEOUT_MS = 3500;
+
 export default function HomePage() {
-  const [topPlayers, setTopPlayers] = useState<Player[]>([]);
-  const [differentials, setDifferentials] = useState<Player[]>([]);
-  const [captains, setCaptains] = useState<Player[]>([]);
-  const [playerPool, setPlayerPool] = useState<Player[]>([]);
-  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [topPlayers, setTopPlayers] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.topPlayers);
+  const [differentials, setDifferentials] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.differentials);
+  const [captains, setCaptains] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.captains);
+  const [playerPool, setPlayerPool] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.playerPool);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(() =>
+    normalizeModelStatus(DASHBOARD_SNAPSHOT.modelStatus)
+  );
   const [error, setError] = useState<string | null>(null);
   const squad = useSavedSquad();
   const { playerIds: savedPlayerIds, hydrated } = squad;
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       setError(null);
       try {
         const requests = [
-          fetchJson<{ predictions?: Player[] }>("/api/predict?limit=12"),
-          fetchJson<{ differentials?: Player[] }>("/api/differentials?limit=6"),
-          fetchJson<{ captain_picks?: Player[] }>("/api/captain"),
-          fetchJson<ModelStatus>("/api/model-status"),
+          fetchDashboardJson<{ predictions?: Player[] }>("/api/predict?limit=12"),
+          fetchDashboardJson<{ differentials?: Player[] }>("/api/differentials?limit=6"),
+          fetchDashboardJson<{ captain_picks?: Player[] }>("/api/captain"),
+          fetchDashboardJson<ModelStatus>("/api/model-status"),
           savedPlayerIds.length
-            ? fetchJson<{ predictions?: Player[] }>("/api/predict?limit=700")
+            ? fetchDashboardJson<{ predictions?: Player[] }>("/api/predict?limit=700")
             : Promise.resolve({ predictions: [] as Player[] }),
         ] as const;
 
         const [predRes, diffRes, capRes, statusRes, poolRes] = await Promise.allSettled(requests);
+        if (cancelled) return;
 
         const failures = [predRes, diffRes, capRes, statusRes, poolRes].filter(
           (result) => result.status === "rejected"
         );
 
-        if (predRes.status === "fulfilled") setTopPlayers(predRes.value.predictions || []);
-        if (diffRes.status === "fulfilled") setDifferentials(diffRes.value.differentials || []);
-        if (capRes.status === "fulfilled") setCaptains(capRes.value.captain_picks || []);
-        if (statusRes.status === "fulfilled") setModelStatus(statusRes.value);
-        if (poolRes.status === "fulfilled") setPlayerPool(poolRes.value.predictions || []);
+        if (predRes.status === "fulfilled") {
+          const nextTopPlayers = playersForDashboardGameweek(predRes.value.predictions);
+          if (nextTopPlayers.length) setTopPlayers(nextTopPlayers);
+        }
+        if (diffRes.status === "fulfilled") {
+          const nextDifferentials = playersForDashboardGameweek(diffRes.value.differentials);
+          if (nextDifferentials.length) setDifferentials(nextDifferentials);
+        }
+        if (capRes.status === "fulfilled") {
+          const nextCaptains = playersForDashboardGameweek(capRes.value.captain_picks);
+          if (nextCaptains.length) setCaptains(nextCaptains);
+        }
+        if (statusRes.status === "fulfilled") setModelStatus(normalizeModelStatus(statusRes.value));
+        if (poolRes.status === "fulfilled") {
+          const nextPlayerPool = playersForDashboardGameweek(poolRes.value.predictions);
+          if (nextPlayerPool.length) setPlayerPool(nextPlayerPool);
+        }
 
-        if (failures.length === requests.length) {
+        if (failures.length === requests.length && !DASHBOARD_SNAPSHOT.topPlayers.length) {
           setError(
             "Live recommendations are temporarily unavailable. Saved outputs will appear where possible while the latest refresh catches up."
           );
-        } else if (failures.length > 0) {
+        } else if (failures.length > 0 && !DASHBOARD_SNAPSHOT.topPlayers.length) {
           setError("Some live recommendations could not load, so this page is showing the best available snapshot.");
         }
       } catch {
-        setError("The gameweek hub could not load live data right now.");
-      } finally {
-        setLoading(false);
+        if (!cancelled && !DASHBOARD_SNAPSHOT.topPlayers.length) {
+          setError("The gameweek hub could not load live data right now.");
+        }
       }
     }
 
     load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [savedPlayerIds]);
 
   const topCaptain = captains[0];
@@ -117,7 +152,7 @@ export default function HomePage() {
     })[0];
   }, [topPlayers]);
 
-  const currentGameweek = modelStatus?.latest_prediction_gameweek;
+  const currentGameweek = DASHBOARD_GAMEWEEK;
   const savedSquad = useMemo(
     () => mapSavedSquadPlayers(savedPlayerIds, playerPool),
     [playerPool, savedPlayerIds]
@@ -129,8 +164,6 @@ export default function HomePage() {
     () => buildSavedSquadSummary(savedSquad, savedDerived.lineup),
     [savedDerived.lineup, savedSquad]
   );
-
-  if (loading) return <LoadingSkeleton />;
 
   return (
     <div className="space-y-8">
@@ -505,6 +538,24 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+function fetchDashboardJson<T>(path: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DASHBOARD_REFRESH_TIMEOUT_MS);
+  return fetchJson<T>(path, { signal: controller.signal }).finally(() => clearTimeout(timeout));
+}
+
+function normalizeModelStatus(status: ModelStatus): ModelStatus {
+  return {
+    ...status,
+    latest_prediction_gameweek: DASHBOARD_GAMEWEEK,
+  };
+}
+
+function playersForDashboardGameweek(players: Player[] | undefined) {
+  if (!players?.length) return [];
+  return players.filter((player) => player.target_gameweek === DASHBOARD_GAMEWEEK);
+}
+
 function formatFixtureLabel(player: Player) {
   if (!player.next_opponent) return "Fixture pending";
   return `${player.next_home ? "vs" : "@"} ${player.next_opponent}`;
@@ -576,27 +627,4 @@ function buildSavedSquadSummary(players: Player[], lineup: Player[]) {
     benchingDecision: benchingDecision ?? null,
     differential: differentialCandidates[0] ?? null,
   };
-}
-
-function LoadingSkeleton() {
-  return (
-    <div className="space-y-8 animate-pulse">
-      <div className="h-72 rounded-[28px] bg-fpl-card" />
-      <div className="grid gap-4 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <div key={index} className="h-48 rounded-2xl bg-fpl-card" />
-        ))}
-      </div>
-      <div className="grid gap-4 lg:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <div key={index} className="h-44 rounded-2xl bg-fpl-card" />
-        ))}
-      </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-        {Array.from({ length: 6 }).map((_, index) => (
-          <div key={index} className="h-40 rounded-2xl bg-fpl-card" />
-        ))}
-      </div>
-    </div>
-  );
 }
