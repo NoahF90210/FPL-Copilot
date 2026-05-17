@@ -13,7 +13,7 @@ FPL Copilot turns Fantasy Premier League data into a deployed weekly decision wo
 
 | Area | Snapshot |
 |---|---|
-| Product | Deployed Next.js + FastAPI FPL planning app, not just a notebook or model script |
+| Product | Deployed Next.js + FastAPI FPL planning app |
 | User problem | Weekly FPL choices require trading off points upside against budget, transfer limits, positions, fixtures, ownership, and points hits |
 | Data | Official FPL data, player prices, positions, ownership, form, minutes, ICT/BPS-style signals, fixture context, and saved prediction artifacts |
 | Modeling | Ridge baseline and `HistGradientBoostingRegressor` model with time-based validation over gameweeks 31-35 |
