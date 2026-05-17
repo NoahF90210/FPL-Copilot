@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">FPL Copilot player browser placeholder</title>
+  <desc id="desc">Placeholder for a production screenshot showing the sortable player prediction table with form, price, ownership, ICT, and fixture difficulty.</desc>
+  <rect width="1440" height="820" fill="#0d0d0d"/>
+  <rect x="56" y="48" width="1328" height="724" rx="28" fill="#161616" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="96" y="118" fill="#00ff85" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">SCREENSHOT TODO</text>
+  <text x="96" y="172" fill="#ffffff" font-family="Arial, sans-serif" font-size="54" font-weight="800">Player Browser</text>
+  <text x="96" y="218" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="26">Capture sorting, position filters, search, predictions, and fixture context.</text>
+  <rect x="96" y="280" width="1248" height="80" rx="18" fill="#101010" stroke="#2a2a2a"/>
+  <text x="130" y="330" fill="#ffffff" font-family="Arial, sans-serif" font-size="24" font-weight="800">All</text>
+  <text x="210" y="330" fill="#00ff85" font-family="Arial, sans-serif" font-size="24" font-weight="800">GKP</text>
+  <text x="310" y="330" fill="#60a5fa" font-family="Arial, sans-serif" font-size="24" font-weight="800">DEF</text>
+  <text x="410" y="330" fill="#00ff85" font-family="Arial, sans-serif" font-size="24" font-weight="800">MID</text>
+  <text x="510" y="330" fill="#f87171" font-family="Arial, sans-serif" font-size="24" font-weight="800">FWD</text>
+  <rect x="96" y="400" width="1248" height="250" rx="18" fill="#101010" stroke="#00ff85" stroke-opacity="0.35"/>
+  <text x="130" y="456" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">PLAYER</text>
+  <text x="430" y="456" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">PRED PTS</text>
+  <text x="610" y="456" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">PRICE</text>
+  <text x="760" y="456" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">OWN%</text>
+  <text x="900" y="456" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">ICT</text>
+  <text x="1040" y="456" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">FIXTURE</text>
+  <line x1="130" y1="486" x2="1304" y2="486" stroke="#2a2a2a"/>
+  <text x="130" y="540" fill="#ffffff" font-family="Arial, sans-serif" font-size="26" font-weight="700">Top prediction rows</text>
+  <text x="430" y="540" fill="#00ff85" font-family="Arial, sans-serif" font-size="26" font-weight="800">sorted desc</text>
+  <text x="1040" y="540" fill="#ffffff" font-family="Arial, sans-serif" font-size="26" font-weight="700">FDR badge</text>
+  <text x="130" y="604" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">Show enough columns that the product value is obvious in one glance.</text>
+</svg>

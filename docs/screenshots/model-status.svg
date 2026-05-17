@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">FPL Copilot model status placeholder</title>
+  <desc id="desc">Placeholder for a production screenshot showing model inputs, freshness, serving mode, and evaluation metrics.</desc>
+  <rect width="1440" height="820" fill="#0d0d0d"/>
+  <rect x="56" y="48" width="1328" height="724" rx="28" fill="#161616" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="96" y="118" fill="#00ff85" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">SCREENSHOT TODO</text>
+  <text x="96" y="172" fill="#ffffff" font-family="Arial, sans-serif" font-size="54" font-weight="800">Model Status and Evaluation</text>
+  <text x="96" y="218" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="26">Capture the About Model page after loading current model metadata.</text>
+  <rect x="96" y="282" width="388" height="300" rx="20" fill="#101010" stroke="#2a2a2a"/>
+  <text x="128" y="338" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="800">Inputs</text>
+  <text x="128" y="388" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">form, minutes, prices</text>
+  <text x="128" y="432" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">ownership, ICT/BPS</text>
+  <text x="128" y="476" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">fixture context</text>
+  <rect x="526" y="282" width="388" height="300" rx="20" fill="#101010" stroke="#00ff85" stroke-opacity="0.35"/>
+  <text x="558" y="338" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="800">Evaluation</text>
+  <text x="558" y="388" fill="#00ff85" font-family="Arial, sans-serif" font-size="30" font-weight="800">MAE 0.947</text>
+  <text x="558" y="432" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">RMSE 1.871</text>
+  <text x="558" y="476" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">GW31-35 validation</text>
+  <rect x="956" y="282" width="388" height="300" rx="20" fill="#101010" stroke="#2a2a2a"/>
+  <text x="988" y="338" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="800">Freshness</text>
+  <text x="988" y="388" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">prediction gameweek</text>
+  <text x="988" y="432" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">serving mode</text>
+  <text x="988" y="476" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">database fallback status</text>
+</svg>

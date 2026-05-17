@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">FPL Copilot dashboard placeholder</title>
+  <desc id="desc">Placeholder for a production dashboard screenshot showing captaincy, differentials, fixture target, saved squad, and model freshness.</desc>
+  <rect width="1440" height="820" fill="#0d0d0d"/>
+  <rect x="56" y="48" width="1328" height="724" rx="28" fill="#161616" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="96" y="118" fill="#00ff85" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">SCREENSHOT TODO</text>
+  <text x="96" y="172" fill="#ffffff" font-family="Arial, sans-serif" font-size="54" font-weight="800">Dashboard and Weekly Signals</text>
+  <text x="96" y="218" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="26">Replace this placeholder with the live app dashboard.</text>
+  <rect x="96" y="286" width="388" height="180" rx="20" fill="#101010" stroke="#00ff85" stroke-opacity="0.35"/>
+  <text x="124" y="340" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">CAPTAINCY EDGE</text>
+  <text x="124" y="390" fill="#ffffff" font-family="Arial, sans-serif" font-size="34" font-weight="800">Top captain card</text>
+  <text x="124" y="428" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="20">predicted points + reasoning</text>
+  <rect x="526" y="286" width="388" height="180" rx="20" fill="#101010" stroke="#2a2a2a"/>
+  <text x="554" y="340" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">DIFFERENTIAL</text>
+  <text x="554" y="390" fill="#ffffff" font-family="Arial, sans-serif" font-size="34" font-weight="800">Low-owned target</text>
+  <text x="554" y="428" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="20">ownership + projection</text>
+  <rect x="956" y="286" width="388" height="180" rx="20" fill="#101010" stroke="#2a2a2a"/>
+  <text x="984" y="340" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="20" font-weight="700">FIXTURE TARGET</text>
+  <text x="984" y="390" fill="#ffffff" font-family="Arial, sans-serif" font-size="34" font-weight="800">FDR-aware pick</text>
+  <text x="984" y="428" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="20">opponent + fixture difficulty</text>
+  <rect x="96" y="520" width="1248" height="150" rx="20" fill="#101010" stroke="#2a2a2a"/>
+  <text x="124" y="578" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="800">Visual proof to capture</text>
+  <text x="124" y="624" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">This week's signals, saved squad summary, top predicted players, and model freshness.</text>
+</svg>

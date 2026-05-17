@@ -3,13 +3,38 @@
 [![CI](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/ci.yml)
 [![Weekly Data Refresh](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/daily-data-refresh.yml/badge.svg)](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/daily-data-refresh.yml)
 
-FPL Copilot is a deployed Fantasy Premier League analytics app that combines model-driven player projections, saved-squad analysis, and transfer-aware optimization.
+FPL Copilot turns Fantasy Premier League data into a deployed weekly decision workspace for captaincy, squad analysis, player research, and transfer-aware optimization.
 
-**Live app:** [fpl-copilot.tech](https://fpl-copilot.tech)
+**Live app:** [fpl-copilot.tech](https://fpl-copilot.tech)  
+**Source / Repository:** [https://github.com/NoahF90210/FPL-Copilot](https://github.com/NoahF90210/FPL-Copilot)  
+**Best 30-second path:** open the dashboard, scan this week's captain/differential/fixture signals, sort the player browser by predicted points, open My Squad to see rule-aware lineup/captaincy planning, then run the Optimizer to compare transfer moves after hits.
 
-## Why It Matters
+## Portfolio Snapshot
 
-Fantasy Premier League decisions are messy: fixtures, ownership, budget, captaincy, bench order, free transfers, and points hits all interact. FPL Copilot turns that into a usable planning workflow:
+| Area | Snapshot |
+|---|---|
+| Product | Deployed Next.js + FastAPI FPL planning app, not just a notebook or model script |
+| User problem | Weekly FPL choices require trading off points upside against budget, transfer limits, positions, fixtures, ownership, and points hits |
+| Data | Official FPL data, player prices, positions, ownership, form, minutes, ICT/BPS-style signals, fixture context, and saved prediction artifacts |
+| Modeling | Ridge baseline and `HistGradientBoostingRegressor` model with time-based validation over gameweeks 31-35 |
+| Latest tracked evaluation | Gradient Boosting MAE `0.947`, RMSE `1.871`; Ridge baseline MAE `0.990`, RMSE `1.890` |
+| Product workflow | Dashboard recommendations -> player research -> saved squad analysis -> transfer-aware optimizer -> model status check |
+| Reliability | API attempts live database reads and falls back to saved report artifacts when storage is unavailable |
+| Visual status | Production PNG screenshots live in `docs/screenshots/` (see **Screenshots**); optional GIF still TODO |
+
+## 30-Second Demo Path
+
+1. Open [fpl-copilot.tech](https://fpl-copilot.tech) and read **This Week's Signals** for captaincy, differentials, and fixture targets.
+2. Click **Players** and sort/filter by predicted points, position, price, ownership, form, ICT, and fixture difficulty.
+3. Click **My Squad** to build a 15-player squad, validate FPL rules, set the XI, captain, vice-captain, bench, bank, free transfers, and chip mode.
+4. Click **Optimizer** to compare the saved team against an optimized squad, including budget, must-include/exclude players, free transfers, chips, and points hits.
+5. Click **How predictions work** from the dashboard to see the model inputs, freshness status, and evaluation snapshot.
+
+## Why This Matters
+
+Fantasy Premier League is a constrained decision-making problem, not a simple "pick the highest projected player" problem. Useful recommendations need to account for budget, transfer limits, position quotas, fixture difficulty, ownership leverage, captaincy upside, bench order, chips, and the cost of extra transfers.
+
+FPL Copilot turns those constraints into a usable planning workflow:
 
 - ranked player projections for the next gameweek
 - fixture-aware captaincy and differential recommendations
@@ -18,15 +43,37 @@ Fantasy Premier League decisions are messy: fixtures, ownership, budget, captain
 - optimizer output that compares raw upside against transfer hits
 - model freshness and evaluation data surfaced in the UI
 
+## Project Story
+
+**Problem:** FPL managers make weekly decisions under uncertainty and hard constraints: budget, squad composition, transfer counts, fixtures, captaincy, ownership, and points hits all interact.
+
+**Data:** The backend ingests and serves FPL player data, prices, teams, positions, form, ownership, fixture context, and generated prediction reports. The app can use a live database or saved report artifacts for a reliable public demo.
+
+**Modeling approach:** The project compares a Ridge baseline against a gradient boosting model. The latest stored evaluation uses time-based validation across gameweeks 31-35 and tracks MAE/RMSE without claiming leaderboard performance.
+
+**Product workflow:** The frontend packages model output into a decision flow: scan weekly recommendations, research players, save a squad, validate legal team structure, and run the optimizer against realistic transfer constraints.
+
+**Result:** A deployed full-stack data product where a recruiter can click the live app, see model-backed recommendations, inspect the model status, and understand how predictions become user-facing decisions.
+
+**Limitations:** FPL outcomes are noisy and affected by late injuries, rotation, tactical changes, and incomplete future information. Current metrics are point-prediction errors from held-out gameweeks, not proof of real-money betting value or guaranteed rank improvement.
+
 ## Screenshots
 
+PNG captures below come from [fpl-copilot.tech](https://fpl-copilot.tech) (viewport ~1400×900). They reflect whatever the demo shows at capture time—for example empty local squad saves or model-status placeholders when the frontend has not resolved fresh API fields yet—and are not substitutes for README evaluation numbers, which follow `backend/reports/latest_evaluation.json` only.
+
 <p>
-  <img src="docs/screenshots/dashboard.jpg" alt="FPL Copilot dashboard" width="100%" />
+  <img src="docs/screenshots/dashboard.png" alt="FPL Copilot dashboard with weekly signals" width="100%" />
 </p>
 
-| Player Predictions | Transfer Optimizer |
+| Captaincy + Squad Analysis | Player Browser |
 |---|---|
-| <img src="docs/screenshots/players.jpg" alt="FPL Copilot players page" width="100%" /> | <img src="docs/screenshots/optimizer.jpg" alt="FPL Copilot optimizer" width="100%" /> |
+| <img src="docs/screenshots/squad-analysis.png" alt="FPL Copilot My Squad builder" width="100%" /> | <img src="docs/screenshots/player-browser.png" alt="FPL Copilot Players table with predictions" width="100%" /> |
+
+| Transfer Optimizer | About Model |
+|---|---|
+| <img src="docs/screenshots/optimizer.png" alt="FPL Copilot Squad Optimizer" width="100%" /> | <img src="docs/screenshots/model-status.png" alt="FPL Copilot About Model page" width="100%" /> |
+
+Older SVG stubs remain in `docs/screenshots/` for offline fallback only. See `docs/screenshots/README.md` for filenames and quick recapture steps (optional GIF TODO).
 
 ## Tech Stack
 
@@ -69,6 +116,7 @@ flowchart LR
 - **Features:** position, price, ownership, fixture difficulty, home/away context, rolling points, rolling minutes, rolling BPS, rolling ICT, rolling expected goal involvements, and games played
 - **Validation:** time-based validation over recent gameweeks
 - **Current tracked metrics:** MAE and RMSE for baseline and gradient boosting models
+- **Latest saved report:** Gradient Boosting MAE `0.947`, RMSE `1.871`; Ridge baseline MAE `0.990`, RMSE `1.890`; `20,704` training rows and `3,951` validation rows in `backend/reports/latest_evaluation.json`
 
 The backend can serve predictions from the live warehouse when available, or degrade gracefully to saved report artifacts so the demo remains usable.
 

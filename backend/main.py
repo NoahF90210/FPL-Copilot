@@ -176,6 +176,10 @@ def players_endpoint(
     max_price: float = 20,
     sort_by: str = "total_points",
     limit: int = Query(default=200, le=700),
+    include_next_fixtures: bool = Query(
+        default=False,
+        description="Include next_fixtures arrays per player (large payload). Off by default for list views.",
+    ),
 ):
     data = _load_players()
 
@@ -197,7 +201,11 @@ def players_endpoint(
     key = sort_by if sort_by in valid_sort else "total_points"
     data.sort(key=lambda p: p.get(key, 0) or 0, reverse=True)
 
-    return {"players": data[:limit], "total": len(data)}
+    slice_players = data[:limit]
+    if not include_next_fixtures:
+        slice_players = [{k: v for k, v in p.items() if k != "next_fixtures"} for p in slice_players]
+
+    return {"players": slice_players, "total": len(data)}
 
 
 # ---------------------------------------------------------------------------

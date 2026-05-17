@@ -37,7 +37,6 @@ const POSITIONS = ["All", "GKP", "DEF", "MID", "FWD"];
 
 export default function PlayersPage() {
   const [players, setPlayers] = useState<Player[]>([]);
-  const [predictions, setPredictions] = useState<Record<number, Player>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [pos, setPos] = useState("All");
@@ -49,17 +48,14 @@ export default function PlayersPage() {
     async function load() {
       setError("");
       try {
-        const [pl, pr] = await Promise.all([
-          fetchJson<{ players?: Player[] }>("/api/players?limit=700"),
-          fetchJson<{ predictions?: Player[] }>("/api/predict?limit=700"),
-        ]);
+        // Single request: /api/players already joins predictions + hydration (same as /api/predict baseline).
+        // Avoids loading and serializing ~700 players twice (major latency improvement).
+        const pl = await fetchJson<{ players?: Player[] }>(
+          "/api/players?limit=700&sort_by=predicted_points"
+        );
         setPlayers(pl.players || []);
-        const map: Record<number, Player> = {};
-        for (const p of pr.predictions || []) map[p.id] = p;
-        setPredictions(map);
       } catch (e: any) {
         setPlayers([]);
-        setPredictions({});
         setError(e.message || "Unable to load player data right now. Try again shortly.");
       } finally {
         setLoading(false);
@@ -68,13 +64,8 @@ export default function PlayersPage() {
     load();
   }, []);
 
-  const enriched = useMemo(
-    () => players.map((p) => ({ ...p, ...predictions[p.id] })),
-    [players, predictions]
-  );
-
   const filtered = useMemo(() => {
-    let data = enriched;
+    let data = players;
     if (pos !== "All") data = data.filter((p) => p.position === pos);
     if (search) {
       const q = normalizeSearch(search);
@@ -99,7 +90,7 @@ export default function PlayersPage() {
       return sortDesc ? bv - av : av - bv;
     });
     return data;
-  }, [enriched, pos, search, sortKey, sortDesc]);
+  }, [players, pos, search, sortKey, sortDesc]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDesc((d) => !d);

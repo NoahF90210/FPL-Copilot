@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">FPL Copilot optimizer placeholder</title>
+  <desc id="desc">Placeholder for a production screenshot showing transfer-aware optimizer output with budget, transfer hit, net gain, and optimized squad.</desc>
+  <rect width="1440" height="820" fill="#0d0d0d"/>
+  <rect x="56" y="48" width="1328" height="724" rx="28" fill="#161616" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="96" y="118" fill="#00ff85" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">SCREENSHOT TODO</text>
+  <text x="96" y="172" fill="#ffffff" font-family="Arial, sans-serif" font-size="54" font-weight="800">Transfer-Aware Optimizer</text>
+  <text x="96" y="218" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="26">Capture an optimizer run with a saved squad baseline.</text>
+  <rect x="96" y="282" width="420" height="370" rx="20" fill="#101010" stroke="#2a2a2a"/>
+  <text x="128" y="338" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="800">Inputs</text>
+  <text x="128" y="388" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">budget slider</text>
+  <text x="128" y="432" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">must include / exclude</text>
+  <text x="128" y="476" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">free transfers + chip</text>
+  <rect x="556" y="282" width="788" height="370" rx="20" fill="#101010" stroke="#00ff85" stroke-opacity="0.35"/>
+  <text x="590" y="338" fill="#ffffff" font-family="Arial, sans-serif" font-size="32" font-weight="800">Transfer plan output</text>
+  <rect x="590" y="382" width="214" height="92" rx="16" fill="#172218" stroke="#00ff85" stroke-opacity="0.35"/>
+  <text x="616" y="420" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="18" font-weight="700">NET GAIN</text>
+  <text x="616" y="458" fill="#00ff85" font-family="Arial, sans-serif" font-size="34" font-weight="800">after hit</text>
+  <rect x="834" y="382" width="214" height="92" rx="16" fill="#101010" stroke="#2a2a2a"/>
+  <text x="860" y="420" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="18" font-weight="700">POINTS HIT</text>
+  <text x="860" y="458" fill="#ffffff" font-family="Arial, sans-serif" font-size="34" font-weight="800">-4 / 0</text>
+  <rect x="1078" y="382" width="214" height="92" rx="16" fill="#101010" stroke="#2a2a2a"/>
+  <text x="1104" y="420" fill="#8a8a8a" font-family="Arial, sans-serif" font-size="18" font-weight="700">TRANSFERS</text>
+  <text x="1104" y="458" fill="#ffffff" font-family="Arial, sans-serif" font-size="34" font-weight="800">moves</text>
+  <text x="590" y="540" fill="#b8b8b8" font-family="Arial, sans-serif" font-size="22">Show outgoing, incoming, optimized cost, budget remaining, and optimized squad by position.</text>
+</svg>

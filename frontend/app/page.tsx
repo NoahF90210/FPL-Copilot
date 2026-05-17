@@ -171,13 +171,13 @@ export default function HomePage() {
         <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
             <div className="inline-flex items-center rounded-full border border-fpl-green/25 bg-fpl-green/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-fpl-green">
-              {currentGameweek ? `Gameweek ${currentGameweek} data science demo` : "Fantasy Premier League model demo"}
+              {currentGameweek ? `Gameweek ${currentGameweek}` : "Fantasy Premier League"}
             </div>
             <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
               Know what to do this gameweek.
             </h1>
             <p className="mt-3 max-w-2xl text-base text-gray-300 sm:text-lg">
-              A public demo of an end-to-end FPL data science project: weekly player projections, fixture-aware recommendations, and transfer planning powered by historical scoring data.
+              Weekly player projections, fixture-aware recommendations, and transfer planning for the current FPL deadline.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <Link
