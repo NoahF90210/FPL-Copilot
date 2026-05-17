@@ -57,23 +57,6 @@ FPL Copilot turns those constraints into a usable planning workflow:
 
 **Limitations:** FPL outcomes are noisy and affected by late injuries, rotation, tactical changes, and incomplete future information. Current metrics are point-prediction errors from held-out gameweeks, not proof of real-money betting value or guaranteed rank improvement.
 
-## Screenshots
-
-PNG captures below come from [fpl-copilot.tech](https://fpl-copilot.tech) (viewport ~1400×900). They reflect whatever the demo shows at capture time—for example empty local squad saves or model-status placeholders when the frontend has not resolved fresh API fields yet—and are not substitutes for README evaluation numbers, which follow `backend/reports/latest_evaluation.json` only.
-
-<p>
-  <img src="docs/screenshots/dashboard.png" alt="FPL Copilot dashboard with weekly signals" width="100%" />
-</p>
-
-| Captaincy + Squad Analysis | Player Browser |
-|---|---|
-| <img src="docs/screenshots/squad-analysis.png" alt="FPL Copilot My Squad builder" width="100%" /> | <img src="docs/screenshots/player-browser.png" alt="FPL Copilot Players table with predictions" width="100%" /> |
-
-| Transfer Optimizer | About Model |
-|---|---|
-| <img src="docs/screenshots/optimizer.png" alt="FPL Copilot Squad Optimizer" width="100%" /> | <img src="docs/screenshots/model-status.png" alt="FPL Copilot About Model page" width="100%" /> |
-
-Older SVG stubs remain in `docs/screenshots/` for offline fallback only. See `docs/screenshots/README.md` for filenames and quick recapture steps (optional GIF TODO).
 
 ## Tech Stack
 
