@@ -156,8 +156,15 @@ def fetch_latest_predictions(session: Session) -> list[dict[str, Any]]:
     return [player for player in players if player.get("predicted_points") is not None]
 
 
-def fetch_upcoming_fixtures(session: Session) -> dict[int, list[dict[str, Any]]]:
-    stmt = select(Fixture).where(Fixture.finished.is_(False)).order_by(Fixture.gameweek.asc(), Fixture.id.asc())
+def fetch_upcoming_fixtures(
+    session: Session,
+    *,
+    from_gameweek: int | None = None,
+) -> dict[int, list[dict[str, Any]]]:
+    stmt = select(Fixture).where(Fixture.finished.is_(False))
+    if from_gameweek is not None:
+        stmt = stmt.where(Fixture.gameweek >= from_gameweek)
+    stmt = stmt.order_by(Fixture.gameweek.asc(), Fixture.id.asc())
     fixtures = session.execute(stmt).scalars().all()
     upcoming: dict[int, list[dict[str, Any]]] = {}
 
@@ -180,10 +187,17 @@ def fetch_upcoming_fixtures(session: Session) -> dict[int, list[dict[str, Any]]]
 
 def hydrate_prediction_context(session: Session, players: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     team_names = {team.id: team.short_name for team in session.execute(select(Team)).scalars().all()}
-    team_fixtures = fetch_upcoming_fixtures(session)
+    player_rows = list(players)
+    target_gameweeks: list[int] = []
+    for player in player_rows:
+        target = player.get("target_gameweek")
+        if isinstance(target, int):
+            target_gameweeks.append(target)
+    target_gameweek = max(target_gameweeks) if target_gameweeks else None
+    team_fixtures = fetch_upcoming_fixtures(session, from_gameweek=target_gameweek)
     hydrated = []
 
-    for player in players:
+    for player in player_rows:
         next_fixtures = team_fixtures.get(player["team_id"], [])
         next_fixture = next_fixtures[0] if next_fixtures else None
         hydrated.append(

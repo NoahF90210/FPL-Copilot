@@ -343,7 +343,9 @@ def train_and_score(session: Session) -> dict[str, Any]:
     confidence = max(float(residuals.std()), 0.5)
     prediction_timestamp = datetime.utcnow()
 
-    session.query(ModelPrediction).filter(ModelPrediction.target_gameweek == target_gameweek).delete()
+    session.query(ModelPrediction).filter(ModelPrediction.model_version == MODEL_VERSION).delete(
+        synchronize_session=False
+    )
 
     saved_predictions = []
     for row in scored_rows.itertuples():
