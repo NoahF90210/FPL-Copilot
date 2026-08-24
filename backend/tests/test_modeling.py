@@ -63,7 +63,10 @@ def test_training_features_use_only_prior_appearances():
     ]
 
 
-def test_next_target_uses_next_unfinished_fixture_at_new_season_start():
+def test_next_target_uses_next_unfinished_fixture_at_new_season_start(monkeypatch):
+    monkeypatch.setattr(modeling, "get_bootstrap", lambda: {})
+    monkeypatch.setattr(modeling, "get_prediction_gameweek", lambda bootstrap: 1)
+
     with make_session() as session:
         session.add_all(
             [
@@ -195,8 +198,8 @@ def test_public_training_path_is_ridge_with_recent_average_baseline(tmp_path, mo
         "feature": "rolling_points_5",
         "version": "recent_points_average_v1",
     }
-    assert [row.player_id for row in saved_rows] == [1, 3]
-    assert [row.baseline_points for row in saved_rows] == [6.25, 4.5]
+    assert [row.player_id for row in saved_rows] == [1]
+    assert [row.baseline_points for row in saved_rows] == [6.25]
     assert all(row.model_version == "ridge_recent_form_v1" for row in saved_rows)
     assert all(
         set(row.metadata_json) >= {"rolling_points_5", "rolling_minutes_5", "opponent_fdr"}

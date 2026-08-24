@@ -18,6 +18,17 @@ SOURCE_ENDPOINTS = [
 ]
 
 
+def get_season_key(bootstrap: dict[str, Any]) -> str:
+    first_deadline = next(
+        (event.get("deadline_time") for event in bootstrap.get("events", []) if event.get("deadline_time")),
+        None,
+    )
+    if not first_deadline:
+        return "unknown"
+    start_year = datetime.fromisoformat(first_deadline.replace("Z", "+00:00")).year
+    return f"{start_year}/{str(start_year + 1)[-2:]}"
+
+
 def _to_float(value: Any) -> float:
     try:
         return float(value or 0)
@@ -35,7 +46,9 @@ def run_ingestion(session: Session) -> dict[str, Any]:
         bootstrap = get_bootstrap()
         fixtures = get_fixtures()
         current_gameweek = get_current_gameweek(bootstrap)
+        season = get_season_key(bootstrap)
         metadata["current_gameweek"] = current_gameweek
+        metadata["season"] = season
 
         for team in bootstrap["teams"]:
             _, created = upsert_model(
@@ -184,10 +197,10 @@ def run_ingestion(session: Session) -> dict[str, Any]:
                     "expected_goal_involvements": _to_float(history.get("expected_goal_involvements")),
                     "opponent_fdr": _to_float(opponent_fdr),
                 }
-                identity = {"player_id": player["id"], "fixture_id": fixture_id}
+                identity = {"player_id": player["id"], "fixture_id": fixture_id, "season": season}
                 if fixture_id is None:
                     defaults["fixture_id"] = fixture_id
-                    identity = {"player_id": player["id"], "gameweek": gw}
+                    identity = {"player_id": player["id"], "gameweek": gw, "season": season}
 
                 _, created = upsert_model(
                     session,
@@ -224,6 +237,7 @@ def run_ingestion(session: Session) -> dict[str, Any]:
                 },
                 team_id=team_id,
                 gameweek=gameweek,
+                season=season,
             )
             rows_inserted += int(created)
             rows_updated += int(not created)

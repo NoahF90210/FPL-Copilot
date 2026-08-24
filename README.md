@@ -38,11 +38,15 @@ The forecast is a planning input, not a guarantee of points, captain success, tr
 
 ## Data freshness
 
-The public app reads forecasts from the live Supabase database.
+The app reads forecasts from the live Supabase database.
 
-A scheduled GitHub Actions workflow refreshes official FPL data and retrains the model every week.
+A scheduled GitHub Actions workflow refreshes official FPL data and retrains the model every Tuesday.
 
-At the start of a new season, the target is derived from the next unfinished fixture rather than the maximum historical gameweek, so last season's rows cannot become the next season's target.
+After a gameweek deadline passes, the target moves to the next official FPL gameweek even if FPL is still finalizing the previous week's scores.
+
+At the start of a new season, recent player history carries forward from the prior season while current prices, clubs, fixtures, and availability come from the new season.
+
+Players marked injured, suspended, unavailable, or doubtful are excluded from the scored recommendation pool.
 
 If the live data service is unavailable, the app says so.
 It does not substitute old or synthetic output.

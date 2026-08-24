@@ -255,6 +255,7 @@ def players_endpoint(
     ),
 ):
     data, serving_mode = _load_players_with_meta()
+    data = [player for player in data if player.get("predicted_points") is not None]
 
     if position:
         data = [p for p in data if p["position"] == position.upper()]

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
+from data.fpl_client import get_bootstrap, get_prediction_gameweek
 from database.models import Fixture, ModelPrediction, Player, PlayerGameweekStat
 from database.repository import save_json_report, save_pipeline_run
 
@@ -42,12 +43,17 @@ def _build_training_dataframe(session: Session) -> pd.DataFrame:
         select(
             PlayerGameweekStat.player_id,
             PlayerGameweekStat.team_id,
+            PlayerGameweekStat.season,
             PlayerGameweekStat.gameweek,
             PlayerGameweekStat.minutes,
             PlayerGameweekStat.total_points,
             PlayerGameweekStat.opponent_fdr,
         )
-        .order_by(PlayerGameweekStat.player_id.asc(), PlayerGameweekStat.gameweek.asc())
+        .order_by(
+            PlayerGameweekStat.player_id.asc(),
+            PlayerGameweekStat.season.asc(),
+            PlayerGameweekStat.gameweek.asc(),
+        )
     )
     rows = session.execute(stmt).all()
     if not rows:
@@ -58,6 +64,7 @@ def _build_training_dataframe(session: Session) -> pd.DataFrame:
         columns=[
             "player_id",
             "team_id",
+            "season",
             "gameweek",
             "minutes",
             "total_points",
@@ -90,12 +97,13 @@ def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]
         session.execute(
             select(
                 PlayerGameweekStat.player_id,
+                PlayerGameweekStat.season,
                 PlayerGameweekStat.gameweek,
                 PlayerGameweekStat.total_points,
                 PlayerGameweekStat.minutes,
             )
         ).all(),
-        columns=["player_id", "gameweek", "total_points", "minutes_hist"],
+        columns=["player_id", "season", "gameweek", "total_points", "minutes_hist"],
     )
 
     latest_gw = int(hist["gameweek"].max()) if not hist.empty else 0
@@ -105,7 +113,7 @@ def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]
         players["rolling_points_5"] = 0.0
         players["rolling_minutes_5"] = 0.0
     else:
-        grouped = hist.sort_values(["player_id", "gameweek"]).groupby("player_id")
+        grouped = hist.sort_values(["player_id", "season", "gameweek"]).groupby("player_id")
         features = grouped.agg(
             games_played=("gameweek", "count"),
             rolling_points_5=("total_points", lambda values: values.tail(5).mean()),
@@ -127,7 +135,11 @@ def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]
         ).all(),
         columns=["gameweek", "team_h", "team_a", "team_h_difficulty", "team_a_difficulty"],
     )
-    next_gameweek = int(upcoming["gameweek"].min()) if not upcoming.empty else latest_gw + 1
+    api_target_gameweek = get_prediction_gameweek(get_bootstrap())
+    fixture_target_gameweek = latest_gw + 1
+    if not upcoming.empty:
+        fixture_target_gameweek = int(upcoming["gameweek"].dropna().to_numpy()[0])
+    next_gameweek = api_target_gameweek or fixture_target_gameweek
     next_fixture_rows = []
     for team_id in players["team_id"].unique():
         team_fixtures = upcoming[(upcoming["team_h"] == team_id) | (upcoming["team_a"] == team_id)]
@@ -322,7 +334,7 @@ def train_and_score(session: Session) -> dict[str, Any]:
     if current_df.empty:
         raise RuntimeError("No player records available for prediction scoring.")
 
-    scored_rows = current_df[current_df["status"] != "u"].copy()
+    scored_rows = current_df[current_df["status"] == "a"].copy()
     scored_rows["predicted_points"] = model_pipeline.predict(scored_rows[FEATURE_COLUMNS]).clip(min=0)
     scored_rows["baseline_points"] = (
         scored_rows[BASELINE_FEATURE].fillna(0.0).clip(lower=0.0)

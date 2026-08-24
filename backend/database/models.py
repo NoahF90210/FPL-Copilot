@@ -85,13 +85,16 @@ class Fixture(Base):
 
 class PlayerGameweekStat(Base):
     __tablename__ = "player_gameweek_stats"
-    __table_args__ = (UniqueConstraint("player_id", "fixture_id", name="uq_player_fixture"),)
+    __table_args__ = (
+        UniqueConstraint("player_id", "fixture_id", "season", name="uq_player_fixture_season"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
     opponent_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     fixture_id: Mapped[int | None] = mapped_column(ForeignKey("fixtures.id"), nullable=True)
+    season: Mapped[str] = mapped_column(String(9), default="legacy", index=True)
     gameweek: Mapped[int] = mapped_column(Integer, index=True)
     was_home: Mapped[bool] = mapped_column(default=False)
     minutes: Mapped[int] = mapped_column(Integer, default=0)
@@ -126,10 +129,11 @@ class PlayerGameweekStat(Base):
 
 class TeamGameweekStat(Base):
     __tablename__ = "team_gameweek_stats"
-    __table_args__ = (UniqueConstraint("team_id", "gameweek", name="uq_team_gameweek"),)
+    __table_args__ = (UniqueConstraint("team_id", "gameweek", "season", name="uq_team_gameweek_season"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    season: Mapped[str] = mapped_column(String(9), default="legacy", index=True)
     gameweek: Mapped[int] = mapped_column(Integer, index=True)
     matches_played: Mapped[int] = mapped_column(Integer, default=0)
     total_points: Mapped[int] = mapped_column(Integer, default=0)

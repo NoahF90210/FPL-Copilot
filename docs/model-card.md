@@ -55,10 +55,13 @@ These metrics do not measure captain success, transfer uplift, calibration, cros
 
 The production API loads player and prediction rows from the live Supabase database.
 
-A scheduled GitHub Actions workflow ingests official FPL data and retrains the model every week.
+A scheduled GitHub Actions workflow ingests official FPL data and retrains the model every Tuesday.
 
-At the start of a new season, the scoring pipeline derives the target from the next unfinished fixture rather than the maximum historical gameweek.
-This prevents an old maximum gameweek from becoming the next target while retaining historical rows for model training.
+After a gameweek deadline passes, the scoring pipeline moves the target to the next official FPL gameweek even if FPL is still finalizing the previous week's scores.
+
+At the start of a new season, recent player history carries forward from the prior season while current prices, clubs, fixtures, and availability come from the new season.
+
+Players marked injured, suspended, unavailable, or doubtful are excluded from the scored recommendation pool.
 
 If the database or refresh workflow is unavailable, collection routes return a safe unavailable response.
 The application does not substitute old or synthetic player forecasts.

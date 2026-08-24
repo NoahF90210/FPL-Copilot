@@ -3,7 +3,7 @@ name: Weekly Data Refresh
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 9 * * 1"
+    - cron: "15 9 * * 2"
 
 jobs:
   refresh:

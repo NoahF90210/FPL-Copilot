@@ -2,6 +2,7 @@
 FPL API client with in-memory caching (5-minute TTL).
 """
 import time
+from datetime import datetime, timezone
 from typing import Any
 import httpx
 
@@ -55,6 +56,21 @@ def get_current_gameweek(bootstrap: dict) -> int:
     for event in bootstrap["events"]:
         if event.get("is_next"):
             return event["id"]
+    return 1
+
+
+def get_prediction_gameweek(bootstrap: dict) -> int:
+    """Return the next deadline target once the current deadline has passed."""
+    current = next((event for event in bootstrap["events"] if event.get("is_current")), None)
+    next_event = next((event for event in bootstrap["events"] if event.get("is_next")), None)
+    if current and next_event and current.get("deadline_time"):
+        deadline = datetime.fromisoformat(current["deadline_time"].replace("Z", "+00:00"))
+        if deadline <= datetime.now(timezone.utc):
+            return int(next_event["id"])
+    if current:
+        return int(current["id"])
+    if next_event:
+        return int(next_event["id"])
     return 1
 
 
