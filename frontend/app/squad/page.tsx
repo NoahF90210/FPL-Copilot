@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import FDRBadge from "@/components/FDRBadge";
+import PredictionStatus from "@/components/PredictionStatus";
 import { fetchJson } from "@/lib/api";
+import { EMPTY_PREDICTION_METADATA } from "@/lib/prediction-fallback";
 import {
   DEFAULT_TEAM_STATE,
   POSITION_LIMITS,
@@ -14,6 +16,11 @@ import {
   type ChipMode,
   type FplPlayer,
 } from "@/lib/fpl-rules";
+import {
+  derivePredictionGameweek,
+  resolveServingMode,
+  type PredictionMetadata,
+} from "@/lib/prediction-meta";
 import { useSavedSquad } from "@/lib/saved-squad";
 
 type SquadPlayer = FplPlayer & {
@@ -21,6 +28,8 @@ type SquadPlayer = FplPlayer & {
   confidence: string;
   total_points: number;
   status: string;
+  target_gameweek?: number;
+  prediction_timestamp?: string;
 };
 
 const POS_COLORS: Record<string, string> = {
@@ -40,22 +49,30 @@ const CHIP_OPTIONS: Array<{ value: ChipMode; label: string }> = [
 
 export default function SquadPage() {
   const [players, setPlayers] = useState<SquadPlayer[]>([]);
+  const [metadata, setMetadata] = useState<PredictionMetadata>(EMPTY_PREDICTION_METADATA);
   const [search, setSearch] = useState("");
   const [positionFilter, setPositionFilter] = useState("All");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
   const squad = useSavedSquad();
 
   useEffect(() => {
     async function load() {
       try {
-        setError("");
-        const data = await fetchJson<{ predictions?: SquadPlayer[] }>("/api/predict?limit=700");
+        setLoadError("");
+        const data = await fetchJson<{ predictions?: SquadPlayer[] } & PredictionMetadata>("/api/predict?limit=700");
         const available = (data.predictions || []).filter((player) => player.status === "a");
-        setPlayers(available);
+        if (available.length && data.serving_mode === "database") {
+          setPlayers(available);
+          setMetadata(data);
+        } else {
+          setLoadError("The live API did not return current database-backed players. Wait for the weekly refresh to finish.");
+        }
       } catch (e: any) {
-        setPlayers([]);
-        setError(e.message || "Unable to load player predictions right now. Try again shortly.");
+        setLoadError(
+          e.message || "Unable to load live player predictions right now."
+        );
       } finally {
         setLoading(false);
       }
@@ -220,14 +237,35 @@ export default function SquadPage() {
     squad.setBenchOrderIds(nextBench.map((player) => player.id));
   }
 
+  const targetGameweek = derivePredictionGameweek({ metadata, players });
+  const servingMode = resolveServingMode(metadata);
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-extrabold text-white">My Squad</h1>
-        <p className="mt-0.5 text-sm text-fpl-muted">
-          Save your full FPL team state here: 15 players, starting XI, bench order, captaincy, bank, transfers, and chip mode.
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Legal squad construction</p>
+        <h1 className="mt-2 text-2xl font-extrabold text-white">Build the 15, then project the XI</h1>
+        <p className="mt-1 max-w-3xl text-sm text-fpl-muted">
+          Enforce FPL position and club limits, choose a legal starting formation, set captaincy and bench order, and save the team as the optimizer baseline.
         </p>
       </div>
+
+      <PredictionStatus
+        mode={servingMode}
+        gameweek={targetGameweek}
+        generatedAt={metadata.generated_at ?? players[0]?.prediction_timestamp}
+        provenance={metadata.prediction_provenance}
+        modelVersion={metadata.model_version}
+        isStale={metadata.is_stale}
+        warning={metadata.serving_warning}
+        compact
+      />
+
+      {squad.hydrated && squad.playerIds.length > 0 && selectedPlayers.length === 0 ? (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
+          Your saved squad IDs are intact, but the active prediction pool could not resolve them. The saved team has not been cleared.
+        </div>
+      ) : null}
 
       <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <div className="space-y-4">
@@ -361,6 +399,16 @@ export default function SquadPage() {
               className="mt-4 w-full rounded-xl border border-fpl-border bg-fpl-bg px-3 py-2 text-sm text-white placeholder:text-fpl-muted focus:border-fpl-green focus:outline-none"
             />
 
+            {loading ? (
+              <div className="mt-4 rounded-xl border border-fpl-border bg-fpl-bg px-4 py-3 text-sm text-fpl-muted">
+                Loading live player data…
+              </div>
+            ) : null}
+            {loadError && (
+              <div className="mt-4 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200">
+                {loadError}
+              </div>
+            )}
             {error && (
               <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
                 {error}
@@ -368,8 +416,10 @@ export default function SquadPage() {
             )}
 
             <div className="mt-4">
-              {loading ? (
-                <div className="animate-pulse text-sm text-fpl-muted">Loading available players...</div>
+              {players.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-fpl-border bg-fpl-bg px-4 py-6 text-sm text-fpl-muted">
+                  The prediction request succeeded without any available players.
+                </div>
               ) : filteredPlayers.length ? (
                 <div className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
                   {filteredPlayers.slice(0, 80).map((player) => (
@@ -384,7 +434,7 @@ export default function SquadPage() {
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-fpl-border bg-fpl-bg px-4 py-6 text-sm text-fpl-muted">
-                  No players match this search right now.
+                  No available players match the active search and position filter.
                 </div>
               )}
             </div>

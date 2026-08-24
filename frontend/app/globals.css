@@ -40,11 +40,3 @@ body {
 .fdr-3 { background-color: #c8c8c8; color: #000; }
 .fdr-4 { background-color: #e05a5a; color: #fff; }
 .fdr-5 { background-color: #8b0000; color: #fff; }
-
-/*
-  Defensive hide for stale client bundles that still render a fourth
-  "One caution flag" card in the dashboard signals row.
-*/
-main > div.space-y-8 > section:nth-of-type(2) > div.grid > div:nth-child(4) {
-  display: none;
-}

@@ -234,33 +234,53 @@ def fetch_model_status(session: Session) -> dict[str, Any]:
     latest_ingestion = latest_pipeline_run(session, "ingestion")
     latest_training = latest_pipeline_run(session, "training")
     latest_prediction = latest_prediction_metadata(session)
-    report = load_evaluation_report() or {}
-    snapshot = load_prediction_snapshot() or {}
-
+    report = (
+        latest_training.metadata_json
+        if latest_training and isinstance(latest_training.metadata_json, dict)
+        else load_evaluation_report() or {}
+    )
     latest_prediction_timestamp = (
         latest_prediction.prediction_timestamp.isoformat()
         if latest_prediction and latest_prediction.prediction_timestamp
-        else snapshot.get("generated_at")
+        else None
     )
     latest_prediction_gameweek = (
         latest_prediction.target_gameweek
         if latest_prediction and latest_prediction.target_gameweek is not None
-        else snapshot.get("target_gameweek")
+        else None
     )
     model_version = (
         latest_prediction.model_version
         if latest_prediction and latest_prediction.model_version
-        else snapshot.get("model_version") or report.get("model_version")
+        else report.get("model_version")
     )
 
     return {
-        "latest_ingestion_run": serialize_pipeline_run(latest_ingestion),
-        "latest_training_run": serialize_pipeline_run(latest_training),
+        "latest_ingestion_run": serialize_pipeline_summary(latest_ingestion),
+        "latest_training_run": serialize_pipeline_summary(latest_training),
         "latest_prediction_timestamp": latest_prediction_timestamp,
         "latest_prediction_gameweek": latest_prediction_gameweek,
         "model_version": model_version,
         "evaluation": report,
         "database_status": "connected",
+        "prediction_serving_mode": "database" if latest_prediction else "unavailable",
+    }
+
+
+def serialize_pipeline_summary(run: PipelineRun | None) -> dict[str, Any] | None:
+    if run is None:
+        return None
+    return {
+        "id": run.id,
+        "run_type": run.run_type,
+        "status": run.status,
+        "source_endpoints": run.source_endpoints,
+        "rows_inserted": run.rows_inserted,
+        "rows_updated": run.rows_updated,
+        "metadata_json": None,
+        "error_message": None,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
     }
 
 

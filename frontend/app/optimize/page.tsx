@@ -5,7 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import clsx from "clsx";
 import FDRBadge from "@/components/FDRBadge";
+import PredictionStatus from "@/components/PredictionStatus";
 import { fetchJson } from "@/lib/api";
+import { EMPTY_PREDICTION_METADATA } from "@/lib/prediction-fallback";
 import {
   computeTransferCost,
   deriveTeamState,
@@ -14,15 +16,22 @@ import {
   type ChipMode,
   type FplPlayer,
 } from "@/lib/fpl-rules";
+import {
+  derivePredictionGameweek,
+  resolveServingMode,
+  type PredictionMetadata,
+} from "@/lib/prediction-meta";
 import { useSavedSquad } from "@/lib/saved-squad";
 
 type OptPlayer = FplPlayer & {
   position_id: number;
   form: number;
   confidence: string;
+  target_gameweek?: number;
+  prediction_timestamp?: string;
 };
 
-interface OptResult {
+interface OptResult extends PredictionMetadata {
   status: string;
   total_cost: number;
   budget_remaining: number;
@@ -60,6 +69,8 @@ function playerLabel(player: OptPlayer) {
 
 export default function OptimizePage() {
   const [players, setPlayers] = useState<OptPlayer[]>([]);
+  const [metadata, setMetadata] = useState<PredictionMetadata>(EMPTY_PREDICTION_METADATA);
+  const [playerLoading, setPlayerLoading] = useState(true);
   const [playerError, setPlayerError] = useState("");
   const [mustInclude, setMustInclude] = useState<OptPlayer[]>([]);
   const [mustExclude, setMustExclude] = useState<OptPlayer[]>([]);
@@ -76,11 +87,19 @@ export default function OptimizePage() {
     async function loadPlayers() {
       try {
         setPlayerError("");
-        const data = await fetchJson<{ predictions?: OptPlayer[] }>("/api/predict?limit=700");
-        setPlayers(data.predictions || []);
+        const data = await fetchJson<{ predictions?: OptPlayer[] } & PredictionMetadata>("/api/predict?limit=700");
+        if (data.predictions?.length && data.serving_mode === "database") {
+          setPlayers(data.predictions);
+          setMetadata(data);
+        } else {
+          setPlayerError("The live API did not return current database-backed predictions. Wait for the weekly refresh to finish.");
+        }
       } catch (e: any) {
-        setPlayers([]);
-        setPlayerError(e.message || "Unable to load player suggestions right now.");
+        setPlayerError(
+          e.message || "Unable to load live player suggestions right now."
+        );
+      } finally {
+        setPlayerLoading(false);
       }
     }
 
@@ -137,6 +156,7 @@ export default function OptimizePage() {
         throw new Error("No valid squad found with these constraints. Try relaxing them.");
       }
       setResult(data);
+      setMetadata(data);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -164,26 +184,30 @@ export default function OptimizePage() {
   );
 
   const transferPlan = useMemo(() => {
-    if (!result || !optimizedProjection) return null;
+    if (!result || !optimizedProjection || !hasFullSavedSquad) return null;
 
     const incoming = result.squad.filter((player) => !squad.playerIds.includes(player.id));
     const outgoing = savedSquad.filter(
       (player) => !result.squad.some((candidate) => candidate.id === player.id)
     );
     const pairedMoves = buildTransferPairs(outgoing, incoming);
-    const transferCount = result.transfer_count || pairedMoves.length;
+    const transferCount = result.transfer_count;
     const hit = result.hit_cost ?? computeTransferCost(transferCount, squad.freeTransfers, squad.activeChip);
     const rawPointGain = optimizedProjection.totalPoints - savedProjection.totalPoints;
 
     return {
       pairedMoves,
       transferCount,
+      paidTransfers: result.paid_transfers,
       hit,
       rawPointGain,
       netPointGain: rawPointGain - hit,
       costDelta: result.total_cost - savedSquadCost,
     };
-  }, [optimizedProjection, result, savedProjection.totalPoints, savedSquad, savedSquadCost, squad]);
+  }, [hasFullSavedSquad, optimizedProjection, result, savedProjection.totalPoints, savedSquad, savedSquadCost, squad]);
+
+  const targetGameweek = derivePredictionGameweek({ metadata, players });
+  const servingMode = resolveServingMode(metadata);
 
   const byPosition = result
     ? (["GKP", "DEF", "MID", "FWD"] as const).reduce<Record<string, OptPlayer[]>>((acc, pos) => {
@@ -195,14 +219,28 @@ export default function OptimizePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-extrabold text-white">Squad Optimizer</h1>
-        <p className="mt-0.5 text-sm text-fpl-muted">
-          Treat your saved team as the baseline, then compare transfers, hits, and chip-adjusted projections against an optimized squad.
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Transfer-aware comparison</p>
+        <h1 className="mt-2 text-2xl font-extrabold text-white">Optimize a legal 15-player squad</h1>
+        <p className="mt-1 max-w-3xl text-sm text-fpl-muted">
+          The solver maximizes full-squad predicted points under budget, position, and club limits. With a complete saved squad, it subtracts four points for each transfer beyond your free allowance.
         </p>
       </div>
 
+      <PredictionStatus
+        mode={servingMode}
+        gameweek={targetGameweek}
+        generatedAt={metadata.generated_at ?? players[0]?.prediction_timestamp}
+        provenance={metadata.prediction_provenance}
+        modelVersion={metadata.model_version}
+        isStale={metadata.is_stale}
+        warning={metadata.serving_warning}
+        compact
+      />
+
       <section className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
-            {squad.hydrated && savedSquad.length ? (
+        {!squad.hydrated ? (
+          <div className="animate-pulse text-sm text-fpl-muted">Loading saved squad state…</div>
+        ) : savedSquad.length ? (
           <div className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
@@ -210,10 +248,10 @@ export default function OptimizePage() {
                   Current FPL team state
                 </p>
                 <h2 className="mt-2 text-xl font-bold text-white">
-                  Rule-aware transfer planning
+                  Saved-squad transfer baseline
                 </h2>
                 <p className="mt-2 text-sm text-fpl-muted">
-                  The optimizer uses your saved squad, bank, free transfers, lineup, and active chip to judge whether a move is really worth making.
+                  The optimizer uses your saved squad, approximate current prices plus bank, free transfers, and Wildcard/Free Hit hit rules. Bench Boost and Triple Captain affect the displayed projection, not squad selection.
                 </p>
               </div>
               <Link
@@ -234,7 +272,7 @@ export default function OptimizePage() {
             <div className="grid gap-3 sm:grid-cols-3">
               <Stat label="Available budget" value={`£${availableBudget.toFixed(1)}m`} />
               <Stat label="Active chip" value={prettyChip(squad.activeChip)} />
-              <Stat label="Captain" value={savedDerived.captain?.name ?? "Pending"} />
+              <Stat label="Captain" value={savedDerived.captain?.name ?? "Not set"} />
             </div>
           </div>
         ) : (
@@ -247,7 +285,7 @@ export default function OptimizePage() {
                 Build your squad first to unlock transfer planning
               </h2>
               <p className="mt-2 text-sm text-fpl-muted">
-                You can still run a generic best-squad search, but the real value here comes from comparing legal moves against your actual team.
+                You can still run a generic best-squad search. Transfer counts and net-gain math only appear after all 15 saved players resolve against the prediction pool.
               </p>
             </div>
             <Link
@@ -342,6 +380,12 @@ export default function OptimizePage() {
             />
           </div>
 
+          {playerLoading ? (
+            <div className="rounded-lg border border-fpl-border bg-fpl-bg px-3 py-2 text-sm text-fpl-muted">
+              Loading the prediction pool…
+            </div>
+          ) : null}
+
           {playerError ? (
             <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-300">
               {playerError}
@@ -350,7 +394,7 @@ export default function OptimizePage() {
 
           <button
             onClick={optimize}
-            disabled={loading}
+            disabled={loading || playerLoading}
             className="w-full rounded-lg bg-fpl-green py-2.5 text-sm font-bold text-black transition-colors hover:bg-fpl-green-dim disabled:opacity-40"
           >
             {loading ? "Optimizing..." : hasFullSavedSquad ? "Compare Against My Squad" : "Find Optimal Squad"}
@@ -371,8 +415,8 @@ export default function OptimizePage() {
                 <Stat label="Budget remaining" value={`£${result.budget_remaining.toFixed(1)}m`} />
                 <Stat label="Raw projected points" value={optimizedProjection.totalPoints.toFixed(1)} highlight />
                 <Stat
-                  label="Net gain after hit"
-                  value={transferPlan ? formatSignedPoints(transferPlan.netPointGain) : "Pending"}
+                  label={transferPlan ? "Net gain after hit" : "Selection objective"}
+                  value={transferPlan ? formatSignedPoints(transferPlan.netPointGain) : `${result.total_predicted_points.toFixed(1)} squad pts`}
                 />
               </div>
 
@@ -387,12 +431,13 @@ export default function OptimizePage() {
                         Rule-aware move summary
                       </h2>
                       <p className="mt-2 text-sm text-fpl-muted">
-                        Transfer counts respect your free transfers, and chips like Wildcard or Free Hit remove the hit automatically.
+                        Net gain = projected XI and captain gain − transfer hit. Wildcard and Free Hit remove the hit; other chips do not change the solver objective.
                       </p>
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <Stat label="Transfers used" value={String(transferPlan.transferCount)} />
-                      <Stat label="Points hit" value={`-${transferPlan.hit}`} />
+                    <div className="grid gap-3 sm:grid-cols-4">
+                      <Stat label="Transfers" value={String(transferPlan.transferCount)} />
+                      <Stat label="Free / paid" value={`${squad.freeTransfers} / ${transferPlan.paidTransfers}`} />
+                      <Stat label="Hit cost" value={`-${transferPlan.hit.toFixed(0)} pts`} />
                       <Stat label="Net gain" value={formatSignedPoints(transferPlan.netPointGain)} highlight={transferPlan.netPointGain >= 0} />
                     </div>
                   </div>
@@ -414,7 +459,7 @@ export default function OptimizePage() {
               <section className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
                 <h2 className="text-xl font-bold text-white">Optimized squad</h2>
                 <p className="mt-2 text-sm text-fpl-muted">
-                  The solver now balances predicted upside against any extra transfer hit, so big overhauls only win if the point gain is worth the cost.
+                  Selection uses all 15 players' predicted points under the legal squad constraints. The projected-points summary above separately derives a legal XI, captain, bench, and selected chip scenario.
                 </p>
                 <div className="mt-5 space-y-4">
                   {(["GKP", "DEF", "MID", "FWD"] as const).map((position) => (
@@ -452,11 +497,15 @@ export default function OptimizePage() {
                 </div>
               </section>
             </>
-          ) : (
+          ) : loading ? (
+            <div className="animate-pulse rounded-xl border border-fpl-border bg-fpl-card px-5 py-10 text-center text-sm text-fpl-muted">
+              Solving the constrained squad problem…
+            </div>
+          ) : error ? null : (
             <div className="rounded-xl border border-dashed border-fpl-border bg-fpl-card px-5 py-10 text-center">
-              <p className="text-lg font-semibold text-white">No optimized team yet</p>
+              <p className="text-lg font-semibold text-white">No optimized squad yet</p>
               <p className="mx-auto mt-2 max-w-2xl text-sm text-fpl-muted">
-                Run the optimizer to compare your saved team against the best projected squad, including transfer hits and chip effects when your full 15-player squad is saved.
+                Run a generic legal-squad search, or save a complete team first to unlock transfer counts, hit costs, and net-gain comparison.
               </p>
             </div>
           )}

@@ -3,8 +3,10 @@ FPL Copilot — FastAPI backend
 """
 from __future__ import annotations
 
-import json
 import logging
+from datetime import datetime, timezone
+from threading import Lock
+from time import monotonic
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -22,11 +24,27 @@ from database.repository import (
 )
 from database.session import get_session, init_db
 from models.optimizer import optimize_squad
-from models.predictor import predict_players
+
 
 app = FastAPI(title="FPL Copilot API", version="2.0.0")
 logger = logging.getLogger(__name__)
 STARTUP_DB_ERROR: str | None = None
+DB_RETRY_AFTER = 0.0
+DB_RETRY_SECONDS = 30.0
+DB_STATE_LOCK = Lock()
+STALE_PREDICTION_DAYS = 7
+LIVE_DATA_UNAVAILABLE_MESSAGE = (
+    "Live FPL prediction data is unavailable. Resume the Supabase database and wait for the scheduled refresh."
+)
+PUBLIC_SERVING_METADATA_KEYS = (
+    "target_gameweek",
+    "generated_at",
+    "serving_mode",
+    "prediction_provenance",
+    "model_version",
+    "is_stale",
+    "serving_warning",
+)
 cors_origins = list(settings.allowed_origins) or []
 
 app.add_middleware(
@@ -47,122 +65,177 @@ def root_endpoint():
     }
 
 
+def _mark_database_available() -> None:
+    global STARTUP_DB_ERROR, DB_RETRY_AFTER
+    with DB_STATE_LOCK:
+        STARTUP_DB_ERROR = None
+        DB_RETRY_AFTER = 0.0
+
+
+def _mark_database_unavailable(exc: Exception) -> None:
+    global STARTUP_DB_ERROR, DB_RETRY_AFTER
+    with DB_STATE_LOCK:
+        STARTUP_DB_ERROR = str(exc)
+        DB_RETRY_AFTER = monotonic() + DB_RETRY_SECONDS
+
+
+def _should_try_database() -> bool:
+    global DB_RETRY_AFTER
+    with DB_STATE_LOCK:
+        if STARTUP_DB_ERROR is None:
+            return True
+        now = monotonic()
+        if now < DB_RETRY_AFTER:
+            return False
+        DB_RETRY_AFTER = now + DB_RETRY_SECONDS
+        return True
+
+
 @app.on_event("startup")
 def startup() -> None:
-    global STARTUP_DB_ERROR
     try:
         init_db()
-        STARTUP_DB_ERROR = None
+        _mark_database_available()
     except Exception as exc:
-        STARTUP_DB_ERROR = str(exc)
+        _mark_database_unavailable(exc)
         logger.warning("Starting API without live database connectivity: %s", exc)
 
 
-def _load_local_prediction_snapshot() -> dict | None:
-    path = settings.latest_predictions_path
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
-
-
-def _load_demo_dashboard_snapshot() -> dict | None:
-    path = settings.reports_dir / "dashboard-demo-data.json"
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
-
-
-def _load_demo_predictions() -> list[dict]:
-    snapshot = _load_demo_dashboard_snapshot()
-    if not snapshot:
-        return []
-    players = snapshot.get("playerPool")
-    return players if isinstance(players, list) else []
-
-
-def _load_local_predictions() -> list[dict]:
-    demo_predictions = _load_demo_predictions()
-    if demo_predictions:
-        return demo_predictions
-
-    snapshot = _load_local_prediction_snapshot()
-    fallback_players = predict_players()
-    if not snapshot:
-        return fallback_players
-
-    prediction_rows = {row["player_id"]: row for row in snapshot.get("predictions", [])}
-    merged = []
-    for player in fallback_players:
-        row = prediction_rows.get(player["id"])
-        merged.append(
-            {
-                **player,
-                "predicted_points": row.get("predicted_points", player.get("predicted_points")) if row else player.get("predicted_points"),
-                "baseline_points": row.get("baseline_points") if row else None,
-                "model_version": snapshot.get("model_version"),
-                "prediction_timestamp": snapshot.get("generated_at"),
-                "target_gameweek": snapshot.get("target_gameweek"),
-            }
-        )
-    merged.sort(key=lambda player: player.get("predicted_points", 0) or 0, reverse=True)
-    return merged
-
-
-def _fallback_model_status() -> dict:
-    demo_snapshot = _load_demo_dashboard_snapshot()
-    if demo_snapshot and isinstance(demo_snapshot.get("modelStatus"), dict):
-        return {
-            **demo_snapshot["modelStatus"],
-            "database_status": "degraded",
-            "database_error": STARTUP_DB_ERROR,
-        }
-
-    snapshot = _load_local_prediction_snapshot() or {}
-    report = load_evaluation_report() or {}
-    saved_predictions = len(snapshot.get("predictions", []))
-    snapshot_timestamp = snapshot.get("generated_at") or report.get("generated_at")
-
+def _unavailable_model_status() -> dict:
+    metadata = _serving_metadata(
+        target_gameweek=None,
+        generated_at=None,
+        serving_mode="unavailable",
+        model_version=None,
+    )
     return {
-        "latest_ingestion_run": {
-            "status": "snapshot_only" if snapshot_timestamp else "unavailable",
-            "completed_at": snapshot_timestamp,
-            "rows_inserted": None,
-            "error_message": STARTUP_DB_ERROR,
-        },
-        "latest_training_run": {
-            "status": "local_report",
-            "completed_at": snapshot_timestamp,
-            "rows_inserted": saved_predictions or None,
-        },
-        "latest_prediction_timestamp": snapshot.get("generated_at"),
-        "latest_prediction_gameweek": snapshot.get("target_gameweek"),
-        "model_version": snapshot.get("model_version") or report.get("model_version"),
-        "evaluation": report,
-        "database_status": "degraded",
-        "database_error": STARTUP_DB_ERROR,
+        "latest_ingestion_run": {"status": "unavailable", "completed_at": None, "rows_inserted": None},
+        "latest_training_run": {"status": "unavailable", "completed_at": None, "rows_inserted": None},
+        "latest_prediction_timestamp": None,
+        "latest_prediction_gameweek": None,
+        "model_version": None,
+        "evaluation": {},
+        "database_status": "unavailable",
+        "prediction_serving_mode": "unavailable",
+        **metadata,
     }
 
 
-def _load_players() -> list[dict]:
+def _load_players_with_meta() -> tuple[list[dict], str]:
+    if not _should_try_database():
+        raise HTTPException(status_code=503, detail=LIVE_DATA_UNAVAILABLE_MESSAGE)
     try:
         with get_session() as session:
             db_players = fetch_players_with_predictions(session)
-            if db_players:
-                return hydrate_prediction_context(session, db_players)
+            if not db_players or not any(player.get("predicted_points") is not None for player in db_players):
+                raise HTTPException(status_code=503, detail=LIVE_DATA_UNAVAILABLE_MESSAGE)
+            hydrated = hydrate_prediction_context(session, db_players)
+        _mark_database_available()
+        return hydrated, "database"
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.warning("Falling back to local player data: %s", exc)
-    return _load_local_predictions()
+        _mark_database_unavailable(exc)
+        logger.warning("Live player data unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=LIVE_DATA_UNAVAILABLE_MESSAGE) from exc
 
 
-def _load_predictions() -> list[dict]:
+def _load_predictions_with_meta() -> tuple[list[dict], str]:
+    if not _should_try_database():
+        raise HTTPException(status_code=503, detail=LIVE_DATA_UNAVAILABLE_MESSAGE)
     try:
         with get_session() as session:
             db_predictions = fetch_latest_predictions(session)
-            if db_predictions:
-                return hydrate_prediction_context(session, db_predictions)
+            if not db_predictions:
+                raise HTTPException(status_code=503, detail=LIVE_DATA_UNAVAILABLE_MESSAGE)
+            hydrated = hydrate_prediction_context(session, db_predictions)
+        _mark_database_available()
+        return hydrated, "database"
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.warning("Falling back to local prediction data: %s", exc)
-    return _load_local_predictions()
+        _mark_database_unavailable(exc)
+        logger.warning("Live prediction data unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=LIVE_DATA_UNAVAILABLE_MESSAGE) from exc
+
+
+def _load_players() -> list[dict]:
+    players, _ = _load_players_with_meta()
+    return players
+
+
+def _load_predictions() -> list[dict]:
+    predictions, _ = _load_predictions_with_meta()
+    return predictions
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _serving_metadata(
+    *,
+    target_gameweek: int | None,
+    generated_at: str | None,
+    serving_mode: str,
+    model_version: str | None,
+) -> dict:
+    generated = _parse_timestamp(generated_at)
+    age_days = (datetime.now(timezone.utc) - generated).total_seconds() / 86400 if generated else None
+    is_stale = bool(age_days is not None and age_days > STALE_PREDICTION_DAYS)
+
+    provenance = "trained_model" if serving_mode == "database" else "unavailable"
+    warning = LIVE_DATA_UNAVAILABLE_MESSAGE if serving_mode == "unavailable" else None
+
+    if is_stale:
+        generated_label = generated_at or "an unknown date"
+        if warning:
+            warning = f"{warning} The prediction timestamp is older than {STALE_PREDICTION_DAYS} days."
+        else:
+            warning = f"Prediction data generated {generated_label} is older than {STALE_PREDICTION_DAYS} days."
+
+    return {
+        "target_gameweek": target_gameweek,
+        "generated_at": generated_at,
+        "serving_mode": serving_mode,
+        "prediction_provenance": provenance,
+        "model_version": model_version,
+        "is_stale": is_stale,
+        "serving_warning": warning,
+    }
+
+
+def _collection_metadata(players: list[dict], serving_mode: str) -> dict:
+    gameweeks = [
+        player.get("target_gameweek")
+        for player in players
+        if isinstance(player.get("target_gameweek"), int)
+    ]
+    timestamps = [
+        player.get("prediction_timestamp")
+        for player in players
+        if isinstance(player.get("prediction_timestamp"), str) and player.get("prediction_timestamp")
+    ]
+    model_versions = {
+        player.get("model_version")
+        for player in players
+        if isinstance(player.get("model_version"), str) and player.get("model_version")
+    }
+    return _serving_metadata(
+        target_gameweek=max(gameweeks) if gameweeks else None,
+        generated_at=max(timestamps) if timestamps else None,
+        serving_mode=serving_mode,
+        model_version=next(iter(model_versions)) if len(model_versions) == 1 else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +254,7 @@ def players_endpoint(
         description="Include next_fixtures arrays per player (large payload). Off by default for list views.",
     ),
 ):
-    data = _load_players()
+    data, serving_mode = _load_players_with_meta()
 
     if position:
         data = [p for p in data if p["position"] == position.upper()]
@@ -205,7 +278,11 @@ def players_endpoint(
     if not include_next_fixtures:
         slice_players = [{k: v for k, v in p.items() if k != "next_fixtures"} for p in slice_players]
 
-    return {"players": slice_players, "total": len(data)}
+    return {
+        "players": slice_players,
+        "total": len(data),
+        **_collection_metadata(data, serving_mode),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +293,14 @@ def predict_endpoint(
     position: Optional[str] = None,
     limit: int = Query(default=50, le=700),
 ):
-    predictions = _load_predictions()
+    predictions, serving_mode = _load_predictions_with_meta()
     if position:
         predictions = [p for p in predictions if p["position"] == position.upper()]
     predictions.sort(key=lambda p: p.get("predicted_points", 0) or 0, reverse=True)
-    return {"predictions": predictions[:limit]}
+    return {
+        "predictions": predictions[:limit],
+        **_collection_metadata(predictions, serving_mode),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -228,12 +308,22 @@ def predict_endpoint(
 # ---------------------------------------------------------------------------
 @app.get("/api/model-status")
 def model_status_endpoint():
-    try:
-        with get_session() as session:
-            return fetch_model_status(session)
-    except Exception as exc:
-        logger.warning("Falling back to local model status: %s", exc)
-        return _fallback_model_status()
+    if _should_try_database():
+        try:
+            with get_session() as session:
+                status = fetch_model_status(session)
+            _mark_database_available()
+            metadata = _serving_metadata(
+                target_gameweek=status.get("latest_prediction_gameweek"),
+                generated_at=status.get("latest_prediction_timestamp"),
+                serving_mode=status.get("prediction_serving_mode") or "unavailable",
+                model_version=status.get("model_version"),
+            )
+            return {**status, **metadata}
+        except Exception as exc:
+            _mark_database_unavailable(exc)
+            logger.warning("Live model status unavailable: %s", exc)
+    return _unavailable_model_status()
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +340,7 @@ class OptimizeRequest(BaseModel):
 
 @app.post("/api/optimize")
 def optimize_endpoint(req: OptimizeRequest):
-    predictions = _load_predictions()
+    predictions, serving_mode = _load_predictions_with_meta()
     has_full_current_squad = len(req.current_squad_player_ids) == 15
     apply_transfer_penalty = has_full_current_squad and req.active_chip not in {
         "wildcard",
@@ -265,7 +355,10 @@ def optimize_endpoint(req: OptimizeRequest):
         free_transfers=req.free_transfers,
         apply_transfer_penalty=apply_transfer_penalty,
     )
-    return result
+    return {
+        **result,
+        **_collection_metadata(predictions, serving_mode),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +370,7 @@ def differentials_endpoint(
     min_predicted: float = 4.0,
     limit: int = 20,
 ):
-    predictions = _load_predictions()
+    predictions, serving_mode = _load_predictions_with_meta()
     diffs = [
         p
         for p in predictions
@@ -286,7 +379,10 @@ def differentials_endpoint(
         and p["status"] == "a"
     ]
     diffs.sort(key=lambda p: p["predicted_points"], reverse=True)
-    return {"differentials": diffs[:limit]}
+    return {
+        "differentials": diffs[:limit],
+        **_collection_metadata(predictions, serving_mode),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +390,7 @@ def differentials_endpoint(
 # ---------------------------------------------------------------------------
 @app.get("/api/captain")
 def captain_endpoint():
-    predictions = _load_predictions()
+    predictions, serving_mode = _load_predictions_with_meta()
     available = [p for p in predictions if p["status"] == "a" and p["minutes"] > 0]
 
     for p in available:
@@ -308,7 +404,10 @@ def captain_endpoint():
         )
 
     available.sort(key=lambda p: p["captain_score"], reverse=True)
-    return {"captain_picks": available[:5]}
+    return {
+        "captain_picks": available[:5],
+        **_collection_metadata(predictions, serving_mode),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -403,23 +502,19 @@ def backtest_endpoint():
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    try:
-        with get_session() as session:
-            status = fetch_model_status(session)
-        return {
-            "status": "ok",
-            "database_status": "connected",
-            "model_version": status.get("model_version"),
-            "latest_prediction_timestamp": status.get("latest_prediction_timestamp"),
-            "latest_ingestion_run": status.get("latest_ingestion_run"),
-        }
-    except Exception:
-        status = _fallback_model_status()
-        return {
-            "status": "degraded",
-            "database_status": "unavailable",
-            "database_error": STARTUP_DB_ERROR,
-            "model_version": status.get("model_version"),
-            "latest_prediction_timestamp": status.get("latest_prediction_timestamp"),
-            "latest_ingestion_run": status.get("latest_ingestion_run"),
-        }
+    serving_status = model_status_endpoint()
+    database_status = serving_status.get("database_status")
+    predictions_current = (
+        database_status == "connected"
+        and serving_status.get("prediction_serving_mode") == "database"
+        and not serving_status.get("is_stale", False)
+    )
+    return {
+        "status": "ok" if predictions_current else "degraded",
+        "database_status": database_status,
+        "prediction_serving_mode": serving_status.get("serving_mode"),
+        "latest_prediction_timestamp": serving_status.get("generated_at"),
+        "latest_prediction_gameweek": serving_status.get("target_gameweek"),
+        "latest_ingestion_run": serving_status.get("latest_ingestion_run"),
+        **{key: serving_status.get(key) for key in PUBLIC_SERVING_METADATA_KEYS},
+    }

@@ -1,25 +1,21 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import joblib
 import pandas as pd
-from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.preprocessing import StandardScaler
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
-from database.models import Fixture, ModelPrediction, Player, PlayerGameweekStat, Team
+from database.models import Fixture, ModelPrediction, Player, PlayerGameweekStat
 from database.repository import save_json_report, save_pipeline_run
 
 try:
@@ -31,22 +27,13 @@ except ImportError:  # pragma: no cover - optional dependency in constrained env
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-MODEL_VERSION = "hist_gradient_boosting_v1"
-BASELINE_VERSION = "ridge_baseline_v1"
+MODEL_VERSION = "ridge_recent_form_v1"
+BASELINE_VERSION = "recent_points_average_v1"
+BASELINE_FEATURE = "rolling_points_5"
 FEATURE_COLUMNS = [
-    "position",
-    "price",
-    "selected_by_percent",
-    "opponent_fdr",
-    "was_home",
-    "rolling_points_3",
     "rolling_points_5",
-    "rolling_minutes_3",
     "rolling_minutes_5",
-    "rolling_bps_5",
-    "rolling_ict_5",
-    "rolling_xgi_5",
-    "games_played",
+    "opponent_fdr",
 ]
 
 
@@ -55,65 +42,37 @@ def _build_training_dataframe(session: Session) -> pd.DataFrame:
         select(
             PlayerGameweekStat.player_id,
             PlayerGameweekStat.team_id,
-            Player.position,
-            Player.price,
-            Player.selected_by_percent,
             PlayerGameweekStat.gameweek,
-            PlayerGameweekStat.was_home,
             PlayerGameweekStat.minutes,
             PlayerGameweekStat.total_points,
-            PlayerGameweekStat.bps,
-            PlayerGameweekStat.ict_index,
-            PlayerGameweekStat.expected_goal_involvements,
             PlayerGameweekStat.opponent_fdr,
         )
-        .join(Player, Player.id == PlayerGameweekStat.player_id)
         .order_by(PlayerGameweekStat.player_id.asc(), PlayerGameweekStat.gameweek.asc())
     )
     rows = session.execute(stmt).all()
     if not rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows, columns=[
-        "player_id",
-        "team_id",
-        "position",
-        "price",
-        "selected_by_percent",
-        "gameweek",
-        "was_home",
-        "minutes",
-        "total_points",
-        "bps",
-        "ict_index",
-        "expected_goal_involvements",
-        "opponent_fdr",
-    ])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "player_id",
+            "team_id",
+            "gameweek",
+            "minutes",
+            "total_points",
+            "opponent_fdr",
+        ],
+    )
 
-    df["was_home"] = df["was_home"].astype(int)
     grouped = df.groupby("player_id", group_keys=False)
     df["games_played"] = grouped.cumcount()
-
-    for column, windows in {
-        "total_points": [3, 5],
-        "minutes": [3, 5],
-        "bps": [5],
-        "ict_index": [5],
-        "expected_goal_involvements": [5],
-    }.items():
-        for window in windows:
-            name = {
-                ("total_points", 3): "rolling_points_3",
-                ("total_points", 5): "rolling_points_5",
-                ("minutes", 3): "rolling_minutes_3",
-                ("minutes", 5): "rolling_minutes_5",
-                ("bps", 5): "rolling_bps_5",
-                ("ict_index", 5): "rolling_ict_5",
-                ("expected_goal_involvements", 5): "rolling_xgi_5",
-            }[(column, window)]
-            df[name] = grouped[column].transform(
-                lambda s: s.shift(1).rolling(window=window, min_periods=1).mean()
-            )
+    df["rolling_points_5"] = grouped["total_points"].transform(
+        lambda values: values.shift(1).rolling(window=5, min_periods=1).mean()
+    )
+    df["rolling_minutes_5"] = grouped["minutes"].transform(
+        lambda values: values.shift(1).rolling(window=5, min_periods=1).mean()
+    )
 
     df = df[df["games_played"] >= 3].copy()
     return df
@@ -121,19 +80,8 @@ def _build_training_dataframe(session: Session) -> pd.DataFrame:
 
 def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]:
     players = pd.DataFrame(
-        session.execute(
-            select(
-                Player.id,
-                Player.team_id,
-                Player.position,
-                Player.price,
-                Player.selected_by_percent,
-                Player.minutes,
-                Player.status,
-                Player.form,
-            )
-        ).all(),
-        columns=["player_id", "team_id", "position", "price", "selected_by_percent", "minutes", "status", "form"],
+        session.execute(select(Player.id, Player.team_id, Player.status)).all(),
+        columns=["player_id", "team_id", "status"],
     )
     if players.empty:
         return players, 1
@@ -145,45 +93,23 @@ def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]
                 PlayerGameweekStat.gameweek,
                 PlayerGameweekStat.total_points,
                 PlayerGameweekStat.minutes,
-                PlayerGameweekStat.bps,
-                PlayerGameweekStat.ict_index,
-                PlayerGameweekStat.expected_goal_involvements,
             )
         ).all(),
-        columns=[
-            "player_id",
-            "gameweek",
-            "total_points",
-            "minutes_hist",
-            "bps",
-            "ict_index",
-            "expected_goal_involvements",
-        ],
+        columns=["player_id", "gameweek", "total_points", "minutes_hist"],
     )
 
-    latest_gw = int(hist["gameweek"].max()) if not hist.empty else 1
-    next_gameweek = latest_gw + 1
+    latest_gw = int(hist["gameweek"].max()) if not hist.empty else 0
 
     if hist.empty:
         players["games_played"] = 0
-        players["rolling_points_3"] = 0.0
         players["rolling_points_5"] = 0.0
-        players["rolling_minutes_3"] = 0.0
         players["rolling_minutes_5"] = 0.0
-        players["rolling_bps_5"] = 0.0
-        players["rolling_ict_5"] = 0.0
-        players["rolling_xgi_5"] = 0.0
     else:
         grouped = hist.sort_values(["player_id", "gameweek"]).groupby("player_id")
         features = grouped.agg(
             games_played=("gameweek", "count"),
-            rolling_points_3=("total_points", lambda s: s.tail(3).mean()),
-            rolling_points_5=("total_points", lambda s: s.tail(5).mean()),
-            rolling_minutes_3=("minutes_hist", lambda s: s.tail(3).mean()),
-            rolling_minutes_5=("minutes_hist", lambda s: s.tail(5).mean()),
-            rolling_bps_5=("bps", lambda s: s.tail(5).mean()),
-            rolling_ict_5=("ict_index", lambda s: s.tail(5).mean()),
-            rolling_xgi_5=("expected_goal_involvements", lambda s: s.tail(5).mean()),
+            rolling_points_5=("total_points", lambda values: values.tail(5).mean()),
+            rolling_minutes_5=("minutes_hist", lambda values: values.tail(5).mean()),
         ).reset_index()
         players = players.merge(features, how="left", on="player_id")
 
@@ -201,19 +127,19 @@ def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]
         ).all(),
         columns=["gameweek", "team_h", "team_a", "team_h_difficulty", "team_a_difficulty"],
     )
+    next_gameweek = int(upcoming["gameweek"].min()) if not upcoming.empty else latest_gw + 1
     next_fixture_rows = []
     for team_id in players["team_id"].unique():
         team_fixtures = upcoming[(upcoming["team_h"] == team_id) | (upcoming["team_a"] == team_id)]
         team_fixtures = team_fixtures[team_fixtures["gameweek"] >= next_gameweek]
         if team_fixtures.empty:
-            next_fixture_rows.append({"team_id": team_id, "was_home": 0, "opponent_fdr": 3.0})
+            next_fixture_rows.append({"team_id": team_id, "opponent_fdr": 3.0})
             continue
         next_fixture = team_fixtures.iloc[0]
         is_home = int(next_fixture["team_h"] == team_id)
         next_fixture_rows.append(
             {
                 "team_id": team_id,
-                "was_home": is_home,
                 "opponent_fdr": float(
                     next_fixture["team_h_difficulty"] if is_home else next_fixture["team_a_difficulty"]
                 ),
@@ -224,46 +150,20 @@ def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]
     players.fillna(
         {
             "games_played": 0,
-            "rolling_points_3": 0.0,
             "rolling_points_5": 0.0,
-            "rolling_minutes_3": 0.0,
             "rolling_minutes_5": 0.0,
-            "rolling_bps_5": 0.0,
-            "rolling_ict_5": 0.0,
-            "rolling_xgi_5": 0.0,
             "opponent_fdr": 3.0,
-            "was_home": 0,
         },
         inplace=True,
     )
     return players, next_gameweek
 
 
-def _build_preprocessor() -> ColumnTransformer:
-    numeric_features = [column for column in FEATURE_COLUMNS if column != "position"]
-    categorical_features = ["position"]
-    return ColumnTransformer(
-        transformers=[
-            (
-                "num",
-                Pipeline(
-                    steps=[
-                        ("imputer", SimpleImputer(strategy="median")),
-                        ("scaler", StandardScaler()),
-                    ]
-                ),
-                numeric_features,
-            ),
-            (
-                "cat",
-                Pipeline(
-                    steps=[
-                        ("imputer", SimpleImputer(strategy="most_frequent")),
-                        ("onehot", OneHotEncoder(handle_unknown="ignore")),
-                    ]
-                ),
-                categorical_features,
-            ),
+def _build_preprocessor() -> Pipeline:
+    return Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
         ]
     )
 
@@ -273,12 +173,15 @@ def _write_markdown_report(report: dict[str, Any]) -> None:
 
 - Generated at: {report["generated_at"]}
 - Model version: {report["model_version"]}
-- Validation gameweeks: {report["validation_gameweeks"]}
+- Baseline version: {report["baseline_version"]}
+- Features: {", ".join(report["feature_columns"])}
+- Validation: {report["validation_strategy"]} over gameweeks {report["validation_gameweeks"]}
+- Primary metric: MAE
 
-| Model | MAE | RMSE |
+| Approach | MAE | RMSE (secondary) |
 |---|---:|---:|
-| Baseline (Ridge) | {report["baseline"]["mae"]:.3f} | {report["baseline"]["rmse"]:.3f} |
-| Gradient Boosting | {report["model"]["mae"]:.3f} | {report["model"]["rmse"]:.3f} |
+| Recent five-appearance points average | {report["baseline"]["mae"]:.3f} | {report["baseline"]["rmse"]:.3f} |
+| Ridge regression | {report["model"]["mae"]:.3f} | {report["model"]["rmse"]:.3f} |
 """
     report_path = settings.reports_dir / "latest_evaluation.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -291,7 +194,6 @@ def _log_training_run_to_mlflow(
     target_gameweek: int,
     saved_predictions: list[dict[str, Any]],
     model_pipeline: Pipeline,
-    baseline_pipeline: Pipeline,
 ) -> None:
     if mlflow is None:
         logger.warning("MLflow is not installed, so experiment tracking will be skipped.")
@@ -319,13 +221,11 @@ def _log_training_run_to_mlflow(
                 "validation_rows": report["validation_rows"],
                 "target_gameweek": target_gameweek,
                 "saved_predictions": len(saved_predictions),
-                "baseline_model_type": "Ridge",
-                "baseline_alpha": 1.0,
-                "main_model_type": "HistGradientBoostingRegressor",
-                "main_learning_rate": 0.05,
-                "main_max_depth": 6,
-                "main_max_iter": 250,
-                "main_random_state": 42,
+                "baseline_type": "recent_points_average",
+                "baseline_feature": BASELINE_FEATURE,
+                "main_model_type": "Ridge",
+                "main_alpha": 1.0,
+                "primary_metric": report["primary_metric"],
             }
         )
         mlflow.log_metrics(
@@ -337,7 +237,6 @@ def _log_training_run_to_mlflow(
             }
         )
 
-        mlflow.sklearn.log_model(baseline_pipeline, name="baseline")
         mlflow.sklearn.log_model(model_pipeline, name="main")
         mlflow.log_artifact(str(settings.model_artifact_path), artifact_path="artifacts")
         mlflow.log_artifact(str(settings.evaluation_report_path), artifact_path="reports")
@@ -367,33 +266,17 @@ def train_and_score(session: Session) -> dict[str, Any]:
     X_valid = valid_df[FEATURE_COLUMNS]
     y_valid = valid_df["total_points"]
 
-    preprocessor = _build_preprocessor()
-    baseline_pipeline = Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("model", Ridge(alpha=1.0)),
-        ]
-    )
     model_pipeline = Pipeline(
         steps=[
             ("preprocessor", _build_preprocessor()),
-            (
-                "model",
-                HistGradientBoostingRegressor(
-                    learning_rate=0.05,
-                    max_depth=6,
-                    max_iter=250,
-                    random_state=42,
-                ),
-            ),
+            ("model", Ridge(alpha=1.0)),
         ]
     )
 
-    baseline_pipeline.fit(X_train, y_train)
     model_pipeline.fit(X_train, y_train)
 
-    baseline_preds = baseline_pipeline.predict(X_valid)
-    model_preds = model_pipeline.predict(X_valid)
+    baseline_preds = valid_df[BASELINE_FEATURE].fillna(0.0).clip(lower=0.0).to_numpy()
+    model_preds = model_pipeline.predict(X_valid).clip(min=0.0)
     baseline_rmse = mean_squared_error(y_valid, baseline_preds) ** 0.5
     model_rmse = mean_squared_error(y_valid, model_preds) ** 0.5
 
@@ -401,6 +284,9 @@ def train_and_score(session: Session) -> dict[str, Any]:
         "generated_at": datetime.utcnow().isoformat(),
         "model_version": MODEL_VERSION,
         "baseline_version": BASELINE_VERSION,
+        "feature_columns": FEATURE_COLUMNS,
+        "primary_metric": "mae",
+        "validation_strategy": "later_gameweek_holdout",
         "validation_gameweeks": sorted(valid_df["gameweek"].unique().tolist()),
         "baseline": {
             "mae": float(mean_absolute_error(y_valid, baseline_preds)),
@@ -418,7 +304,11 @@ def train_and_score(session: Session) -> dict[str, Any]:
     joblib.dump(
         {
             "model": model_pipeline,
-            "baseline": baseline_pipeline,
+            "baseline": {
+                "type": "recent_points_average",
+                "feature": BASELINE_FEATURE,
+                "version": BASELINE_VERSION,
+            },
             "feature_columns": FEATURE_COLUMNS,
             "model_version": MODEL_VERSION,
             "trained_at": datetime.utcnow().isoformat(),
@@ -434,7 +324,9 @@ def train_and_score(session: Session) -> dict[str, Any]:
 
     scored_rows = current_df[current_df["status"] != "u"].copy()
     scored_rows["predicted_points"] = model_pipeline.predict(scored_rows[FEATURE_COLUMNS]).clip(min=0)
-    scored_rows["baseline_points"] = baseline_pipeline.predict(scored_rows[FEATURE_COLUMNS]).clip(min=0)
+    scored_rows["baseline_points"] = (
+        scored_rows[BASELINE_FEATURE].fillna(0.0).clip(lower=0.0)
+    )
     residuals = y_valid - model_preds
     confidence = max(float(residuals.std()), 0.5)
     prediction_timestamp = datetime.utcnow()
@@ -454,6 +346,8 @@ def train_and_score(session: Session) -> dict[str, Any]:
             metadata_json={
                 "games_played": int(row.games_played),
                 "rolling_points_5": float(row.rolling_points_5),
+                "rolling_minutes_5": float(row.rolling_minutes_5),
+                "opponent_fdr": float(row.opponent_fdr),
             },
         )
         session.add(prediction)
@@ -479,7 +373,6 @@ def train_and_score(session: Session) -> dict[str, Any]:
         target_gameweek=target_gameweek,
         saved_predictions=saved_predictions,
         model_pipeline=model_pipeline,
-        baseline_pipeline=baseline_pipeline,
     )
 
     save_pipeline_run(
