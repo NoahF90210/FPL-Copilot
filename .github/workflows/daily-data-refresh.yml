@@ -3,11 +3,12 @@ name: Weekly Data Refresh
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 9 * * 1"
+    - cron: "15 9 * * 2"
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       APP_ENV: production
@@ -32,11 +33,6 @@ jobs:
       - name: Train and score latest model
         working-directory: backend
         run: python scripts/train_model.py
-      - name: Upload reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: fpl-copilot-reports
-          path: |
-            backend/reports/latest_evaluation.json
-            backend/reports/latest_evaluation.md
-            backend/reports/latest_predictions.json
+      - name: Verify live prediction run
+        working-directory: backend
+        run: python scripts/verify_refresh.py

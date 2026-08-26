@@ -3,14 +3,21 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import PlayerCard from "@/components/PlayerCard";
-import demoDashboardData from "@/lib/dashboard-demo-data.json";
 import { fetchJson } from "@/lib/api";
+import { EMPTY_PREDICTION_METADATA } from "@/lib/prediction-fallback";
 import {
   deriveTeamState,
   projectTeamPoints,
   validateTeam,
   type FplPlayer,
 } from "@/lib/fpl-rules";
+import {
+  derivePredictionGameweek,
+  formatRelativeTime,
+  type ModelStatus,
+  type PredictionMetadata,
+  type PredictionResponse,
+} from "@/lib/prediction-meta";
 import { mapSavedSquadPlayers, useSavedSquad } from "@/lib/saved-squad";
 
 interface Player extends FplPlayer {
@@ -29,53 +36,14 @@ interface Player extends FplPlayer {
   target_gameweek?: number;
 }
 
-interface ModelStatus {
-  latest_ingestion_run?: {
-    completed_at?: string | null;
-    status?: string;
-    rows_inserted?: number | null;
-  } | null;
-  latest_training_run?: {
-    completed_at?: string | null;
-    status?: string;
-    rows_inserted?: number | null;
-  } | null;
-  latest_prediction_timestamp?: string | null;
-  latest_prediction_gameweek?: number | null;
-  model_version?: string | null;
-  evaluation?: {
-    baseline?: { mae?: number; rmse?: number };
-    model?: { mae?: number; rmse?: number };
-    validation_gameweeks?: number[];
-    training_rows?: number;
-    validation_rows?: number;
-  } | null;
-  database_status?: string;
-  database_error?: string | null;
-}
-
-type DashboardDemoData = {
-  gameweek: number;
-  topPlayers: Player[];
-  differentials: Player[];
-  captains: Player[];
-  playerPool: Player[];
-  modelStatus: ModelStatus;
-};
-
-const DASHBOARD_SNAPSHOT = demoDashboardData as DashboardDemoData;
-const DASHBOARD_GAMEWEEK = 37;
-const DASHBOARD_REFRESH_TIMEOUT_MS = 3500;
+const DASHBOARD_REFRESH_TIMEOUT_MS = 8000;
 
 export default function HomePage() {
-  const [topPlayers, setTopPlayers] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.topPlayers);
-  const [differentials, setDifferentials] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.differentials);
-  const [captains, setCaptains] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.captains);
-  const [playerPool, setPlayerPool] = useState<Player[]>(() => DASHBOARD_SNAPSHOT.playerPool);
-  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(() =>
-    normalizeModelStatus(DASHBOARD_SNAPSHOT.modelStatus)
-  );
-  const [error, setError] = useState<string | null>(null);
+  const [topPlayers, setTopPlayers] = useState<Player[]>([]);
+  const [playerPool, setPlayerPool] = useState<Player[]>([]);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [predictionMeta, setPredictionMeta] = useState<PredictionMetadata>(EMPTY_PREDICTION_METADATA);
+  const [notice, setNotice] = useState<string | null>(null);
   const squad = useSavedSquad();
   const { playerIds: savedPlayerIds, hydrated } = squad;
 
@@ -83,76 +51,78 @@ export default function HomePage() {
     let cancelled = false;
 
     async function load() {
-      setError(null);
-      try {
-        const requests = [
-          fetchDashboardJson<{ predictions?: Player[] }>("/api/predict?limit=12"),
-          fetchDashboardJson<{ differentials?: Player[] }>("/api/differentials?limit=6"),
-          fetchDashboardJson<{ captain_picks?: Player[] }>("/api/captain"),
-          fetchDashboardJson<ModelStatus>("/api/model-status"),
-          savedPlayerIds.length
-            ? fetchDashboardJson<{ predictions?: Player[] }>("/api/predict?limit=700")
-            : Promise.resolve({ predictions: [] as Player[] }),
-        ] as const;
+      setNotice(null);
 
-        const [predRes, diffRes, capRes, statusRes, poolRes] = await Promise.allSettled(requests);
-        if (cancelled) return;
+      const coreRequests = [
+        fetchDashboardJson<PredictionResponse<Player>>("/api/predict?limit=12"),
+        fetchDashboardJson<ModelStatus>("/api/model-status"),
+      ] as const;
+      const poolRequest = savedPlayerIds.length
+        ? fetchDashboardJson<PredictionResponse<Player>>("/api/predict?limit=700")
+        : null;
 
-        const failures = [predRes, diffRes, capRes, statusRes, poolRes].filter(
-          (result) => result.status === "rejected"
-        );
+      const [predRes, statusRes] = await Promise.allSettled(coreRequests);
+      const poolRes = poolRequest ? await Promise.allSettled([poolRequest]).then(([result]) => result) : null;
+      if (cancelled) return;
 
-        if (predRes.status === "fulfilled") {
-          const nextTopPlayers = playersForDashboardGameweek(predRes.value.predictions);
-          if (nextTopPlayers.length) setTopPlayers(nextTopPlayers);
-        }
-        if (diffRes.status === "fulfilled") {
-          const nextDifferentials = playersForDashboardGameweek(diffRes.value.differentials);
-          if (nextDifferentials.length) setDifferentials(nextDifferentials);
-        }
-        if (capRes.status === "fulfilled") {
-          const nextCaptains = playersForDashboardGameweek(capRes.value.captain_picks);
-          if (nextCaptains.length) setCaptains(nextCaptains);
-        }
-        if (statusRes.status === "fulfilled") setModelStatus(normalizeModelStatus(statusRes.value));
-        if (poolRes.status === "fulfilled") {
-          const nextPlayerPool = playersForDashboardGameweek(poolRes.value.predictions);
-          if (nextPlayerPool.length) setPlayerPool(nextPlayerPool);
-        }
+      const results = [predRes, statusRes, ...(poolRes ? [poolRes] : [])];
+      const failureCount = results.filter((result) => result.status === "rejected").length;
+      const successfulMetadata: PredictionMetadata[] = [];
 
-        if (failures.length === requests.length && !DASHBOARD_SNAPSHOT.topPlayers.length) {
-          setError(
-            "Live recommendations are temporarily unavailable. Saved outputs will appear where possible while the latest refresh catches up."
-          );
-        } else if (failures.length > 0 && !DASHBOARD_SNAPSHOT.topPlayers.length) {
-          setError("Some live recommendations could not load, so this page is showing the best available snapshot.");
-        }
-      } catch {
-        if (!cancelled && !DASHBOARD_SNAPSHOT.topPlayers.length) {
-          setError("The gameweek hub could not load live data right now.");
-        }
+      if (predRes.status === "fulfilled" && predRes.value.serving_mode === "database") {
+        setTopPlayers(predRes.value.predictions ?? []);
+        successfulMetadata.push(predRes.value);
+      } else if (predRes.status === "fulfilled") {
+        setTopPlayers([]);
+      }
+      if (statusRes.status === "fulfilled" && statusRes.value.prediction_serving_mode === "database") {
+        setModelStatus(statusRes.value);
+        successfulMetadata.push(statusRes.value);
+      } else if (statusRes.status === "fulfilled") {
+        setModelStatus(null);
+      }
+      if (poolRes?.status === "fulfilled" && poolRes.value.serving_mode === "database") {
+        setPlayerPool(poolRes.value.predictions ?? []);
+        successfulMetadata.push(poolRes.value);
+      } else if (poolRes?.status === "fulfilled") {
+        setPlayerPool([]);
+      }
+
+      const primaryMetadata = successfulMetadata.find((metadata) => metadata.serving_mode);
+      if (primaryMetadata) setPredictionMeta(primaryMetadata);
+      else setPredictionMeta(EMPTY_PREDICTION_METADATA);
+
+      if (
+        predRes.status === "rejected" ||
+        statusRes.status === "rejected" ||
+        (predRes.status === "fulfilled" && predRes.value.serving_mode !== "database")
+      ) {
+        setNotice("Live FPL data is unavailable. Resume Supabase or wait for the weekly refresh to finish.");
+      } else if (failureCount > 0) {
+        setNotice("The live player pool loaded, but one supporting request did not finish.");
       }
     }
 
-    load();
+    load().catch(() => {
+      if (!cancelled) {
+        setPredictionMeta(EMPTY_PREDICTION_METADATA);
+        setNotice("Live FPL data is unavailable. Resume Supabase or wait for the weekly refresh to finish.");
+      }
+    });
 
     return () => {
       cancelled = true;
     };
   }, [savedPlayerIds]);
 
-  const topCaptain = captains[0];
-  const bestDifferential = differentials[0];
-  const fixtureTarget = useMemo(() => {
-    if (!topPlayers.length) return null;
-    return [...topPlayers].sort((a, b) => {
-      const fdrDiff = (a.next_fdr ?? 99) - (b.next_fdr ?? 99);
-      if (fdrDiff !== 0) return fdrDiff;
-      return (b.predicted_points ?? 0) - (a.predicted_points ?? 0);
-    })[0];
-  }, [topPlayers]);
+  const currentGameweek = derivePredictionGameweek({
+    metadata: predictionMeta,
+    status: modelStatus,
+    players: topPlayers,
+  });
+  const generatedAt =
+    predictionMeta.generated_at ?? modelStatus?.latest_prediction_timestamp;
 
-  const currentGameweek = DASHBOARD_GAMEWEEK;
   const savedSquad = useMemo(
     () => mapSavedSquadPlayers(savedPlayerIds, playerPool),
     [playerPool, savedPlayerIds]
@@ -171,178 +141,107 @@ export default function HomePage() {
         <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
             <div className="inline-flex items-center rounded-full border border-fpl-green/25 bg-fpl-green/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-fpl-green">
-              {currentGameweek ? `Gameweek ${currentGameweek}` : "Fantasy Premier League"}
+              {currentGameweek ? `Forecast target · GW ${currentGameweek}` : "Fantasy Premier League"}
             </div>
             <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
-              Know what to do this gameweek.
+              Turn player forecasts into an FPL plan.
             </h1>
             <p className="mt-3 max-w-2xl text-base text-gray-300 sm:text-lg">
-              Weekly player projections, fixture-aware recommendations, and transfer planning for the current FPL deadline.
+              Forecast next-gameweek points, compare fixture and ownership context, then test squad and transfer decisions under FPL constraints.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <Link
                 href="/squad"
                 className="rounded-xl bg-fpl-green px-5 py-3 text-sm font-bold text-black transition-colors hover:bg-fpl-green-dim"
               >
-                Check My Squad
+                Build My Squad
               </Link>
               <Link
                 href="/players"
                 className="rounded-xl border border-fpl-border bg-white/5 px-5 py-3 text-sm font-semibold text-white transition-colors hover:border-fpl-green/40 hover:bg-fpl-green/10"
               >
-                Browse Players
+                Research Players
               </Link>
+              <Link
+                href="/about-model"
+                className="rounded-xl border border-fpl-border bg-white/5 px-5 py-3 text-sm font-semibold text-white transition-colors hover:border-fpl-green/40 hover:bg-fpl-green/10"
+              >
+                Inspect the Model
+              </Link>
+            </div>
+            <div className="mt-5 inline-flex flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs">
+              <span className="font-semibold uppercase tracking-[0.18em] text-fpl-green">FPL Copilot</span>
+              <span className="text-white">{currentGameweek ? `GW ${currentGameweek}` : "Live data unavailable"}</span>
+              {generatedAt ? <span className="text-fpl-muted">Updated {formatRelativeTime(generatedAt)}</span> : null}
             </div>
           </div>
 
-          <div className="grid min-w-full gap-3 sm:grid-cols-3 lg:min-w-[420px] lg:max-w-[460px]">
-            <HeroStat
-              label="Top captain"
-              value={topCaptain?.name ?? "Loading soon"}
-              detail={
-                topCaptain?.captain_score
-                  ? `${topCaptain.captain_score.toFixed(1)} captain score`
-                  : "Best armband play for this gameweek"
-              }
-            />
-            <HeroStat
-              label="Best differential"
-              value={bestDifferential?.name ?? "Loading soon"}
-              detail={
-                bestDifferential?.selected_by_percent !== undefined
-                  ? `${bestDifferential.selected_by_percent.toFixed(1)}% owned`
-                  : "Low-owned upside play"
-              }
-            />
-            <HeroStat
-              label="Predictions"
-              value={currentGameweek ? `GW ${currentGameweek}` : "Pending"}
-              detail={formatRelativeTime(modelStatus?.latest_prediction_timestamp)}
-            />
+          <div className="min-w-full rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm lg:min-w-[420px] lg:max-w-[460px]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-fpl-muted">Next-gameweek leaders</p>
+            <div className="mt-3 space-y-3">
+              {topPlayers.slice(0, 3).map((player, index) => (
+                <div key={player.id} className="flex items-center gap-3">
+                  <span className="w-5 text-sm font-bold text-fpl-green">{index + 1}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-white">{player.name}</p>
+                    <p className="text-xs text-fpl-muted">{player.position} · {player.team_short} · {formatFixtureLabel(player)}</p>
+                  </div>
+                  <p className="text-lg font-extrabold text-fpl-green">{player.predicted_points.toFixed(1)}</p>
+                  <span className="text-[10px] uppercase tracking-wide text-fpl-muted">pts</span>
+                </div>
+              ))}
+              {!topPlayers.length ? <p className="text-sm text-fpl-muted">Waiting for the live forecast run.</p> : null}
+            </div>
           </div>
         </div>
       </section>
 
-      {error && (
+      {notice && (
         <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200">
-          {error}
+          {notice}
         </div>
       )}
-
-      <section>
-        <div className="mb-3 flex items-end justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-bold text-white">This Week&apos;s Signals</h2>
-            <p className="mt-1 text-sm text-fpl-muted">
-              A quick read on the strongest moves before you dive into the full tools.
-            </p>
-          </div>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-3">
-          <RecommendationCard
-            title="Captaincy edge"
-            headline={topCaptain?.name ?? "No captain recommendation yet"}
-            detail={
-              topCaptain
-                ? `${topCaptain.position} · ${topCaptain.team_short} · ${topCaptain.predicted_points.toFixed(1)} predicted pts`
-                : "Start the backend to generate captain picks."
-            }
-            footnote={topCaptain?.captain_reasoning ?? "The best armband option will show up here once predictions are available."}
-            accent="green"
-          />
-          <RecommendationCard
-            title="Differential to watch"
-            headline={bestDifferential?.name ?? "No differential recommendation yet"}
-            detail={
-              bestDifferential
-                ? `${bestDifferential.predicted_points.toFixed(1)} predicted pts · ${bestDifferential.selected_by_percent.toFixed(1)}% owned`
-                : "Low-owned upside plays appear here."
-            }
-            footnote={
-              bestDifferential
-                ? `${bestDifferential.team_short} ${formatFixtureLabel(bestDifferential)}`
-                : "Useful for catching upside before ownership spikes."
-            }
-          />
-          <RecommendationCard
-            title="Fixture target"
-            headline={fixtureTarget?.name ?? "No standout fixture yet"}
-            detail={
-              fixtureTarget
-                ? `${formatFixtureLabel(fixtureTarget)} · FDR ${fixtureTarget.next_fdr}`
-                : "Fixture-led opportunities will appear here."
-            }
-            footnote={
-              fixtureTarget
-                ? `${fixtureTarget.predicted_points.toFixed(1)} predicted pts with one of the softest fixtures on the board.`
-                : "Great for transfer tie-breakers."
-            }
-          />
-        </div>
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-3">
-        <ActionCard
-          title="Analyze my squad"
-          description="Build and save your squad once, then keep its projected points and structure available across the app."
-          href="/squad"
-          cta="Open My Squad"
-        />
-        <ActionCard
-          title="Browse players"
-          description="Filter the full player pool by predicted points, form, price, ownership, and fixture difficulty."
-          href="/players"
-          cta="Open Players"
-        />
-        <ActionCard
-          title="Build optimal squad"
-          description="Use the optimizer to compare your current squad against a transfer-aware plan that balances upside, budget, and points hits."
-          href="/optimize"
-          cta="Open Optimizer"
-        />
-      </section>
 
       <section className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">
-              Your squad
-            </p>
-            <h2 className="mt-2 text-xl font-bold text-white">
-              Saved squad insights for this gameweek
-            </h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Plan under constraints</p>
+            <h2 className="mt-2 text-xl font-bold text-white">Your legal squad, lineup, and transfer baseline</h2>
             <p className="mt-2 text-sm text-fpl-muted">
-              Keep your current team in view while you decide whether to hold, captain, or optimize.
+              Save 15 players, choose a legal XI and captain, then compare transfer moves after free transfers and points hits.
             </p>
           </div>
           <Link
             href={savedSquad.length ? "/optimize" : "/squad"}
             className="inline-flex items-center justify-center rounded-xl border border-fpl-border bg-fpl-bg px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:border-fpl-green/40 hover:text-fpl-green"
           >
-            {savedSquad.length ? "Improve My Squad" : "Build My Squad"}
+            {savedSquad.length ? "Compare Transfers" : "Build My Squad"}
           </Link>
         </div>
 
-        {hydrated && savedSquad.length && savedSquadSummary ? (
+        {!hydrated ? (
+          <div className="mt-5 animate-pulse rounded-xl border border-fpl-border bg-fpl-bg px-5 py-8 text-sm text-fpl-muted">
+            Loading saved squad state…
+          </div>
+        ) : savedPlayerIds.length > 0 && savedSquad.length === 0 ? (
+          <div className="mt-5 rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-5 py-6 text-sm text-yellow-100">
+            Your saved player IDs are still stored, but the active prediction pool could not resolve them. Try again when player data is available.
+          </div>
+        ) : savedSquad.length && savedSquadSummary ? (
           <div className="mt-5 grid gap-3 lg:grid-cols-4">
-            <TrustStat
-              label="Projected squad points"
-              value={savedProjection.totalPoints.toFixed(1)}
-              detail={`${savedSquad.length}/15 players saved`}
-            />
+            <TrustStat label="Projected XI + captain" value={savedProjection.totalPoints.toFixed(1)} detail={`${savedSquad.length}/15 players resolved`} />
             <TrustStat
               label="Best captain in squad"
               value={savedSquadSummary.captain.name}
               detail={`${savedSquadSummary.captain.predicted_points.toFixed(1)} predicted pts · ${formatFixtureLabel(savedSquadSummary.captain)}`}
             />
             <TrustStat
-              label="Benching headache"
+              label="Benching decision"
               value={savedSquadSummary.benchingDecision?.name ?? "Set your XI"}
               detail={
                 savedSquadSummary.benchingDecision
-                  ? `${savedSquadSummary.benchingDecision.predicted_points.toFixed(1)} predicted pts currently left out`
-                  : "Pick a full starting XI to surface tough bench calls."
+                  ? `${savedSquadSummary.benchingDecision.predicted_points.toFixed(1)} predicted pts outside the XI`
+                  : "A full squad is needed to compare the bench."
               }
             />
             <TrustStat
@@ -350,16 +249,16 @@ export default function HomePage() {
               value={savedValidation.squadLegal && savedValidation.lineupLegal ? "Legal team" : "Needs attention"}
               detail={
                 savedValidation.squadLegal && savedValidation.lineupLegal
-                  ? `${savedSquadSummary.differential?.name ?? "No differential"} gives you low-owned upside.`
+                  ? "Position, club, and formation constraints pass."
                   : [...savedValidation.squadMessages, ...savedValidation.lineupMessages][0]
               }
             />
           </div>
         ) : (
           <div className="mt-5 rounded-xl border border-dashed border-fpl-border bg-fpl-bg px-5 py-8">
-            <p className="text-lg font-semibold text-white">No saved squad insights yet</p>
+            <p className="text-lg font-semibold text-white">No saved squad yet</p>
             <p className="mt-2 max-w-2xl text-sm text-fpl-muted">
-              Save your squad in My Squad and the dashboard will immediately show your projected total, best captain already owned, and where the weakest spot sits.
+              Start in My Squad to construct a legal 15-player team and unlock lineup, captaincy, and transfer comparisons.
             </p>
           </div>
         )}
@@ -368,13 +267,14 @@ export default function HomePage() {
       <section>
         <div className="mb-3 flex items-end justify-between gap-4">
           <div>
-            <h2 className="text-lg font-bold text-white">Top Predicted Players</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Start here</p>
+            <h2 className="mt-2 text-xl font-bold text-white">The players projected to score most next week</h2>
             <p className="mt-1 text-sm text-fpl-muted">
-              The highest projected options for the upcoming gameweek.
+              Use the ranking as the first pass, then open Players for deeper price, form, ownership, and fixture context.
             </p>
           </div>
           <Link href="/players" className="text-sm font-semibold text-fpl-green hover:text-fpl-green-dim">
-            See all players
+            Open player research
           </Link>
         </div>
 
@@ -388,7 +288,7 @@ export default function HomePage() {
                 badge={
                   index === 0 ? (
                     <span className="rounded-full border border-fpl-green/40 bg-fpl-green/10 px-2 py-0.5 text-[10px] font-semibold text-fpl-green">
-                      Best proj
+                      Highest forecast
                     </span>
                   ) : undefined
                 }
@@ -396,126 +296,10 @@ export default function HomePage() {
             ))}
           </div>
         ) : (
-          <EmptyState
-            title="Predicted player rankings will appear here"
-            body="Once live predictions are available, this section becomes your fastest view of the best overall plays for the week."
-          />
-        )}
-      </section>
-
-      <section className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-fpl-green">Trust the output</p>
-            <h2 className="mt-2 text-xl font-bold text-white">Fresh enough to act on, simple enough to trust.</h2>
-            <p className="mt-2 text-sm text-gray-300">
-              Based on historical FPL performance, recent form, and fixture context. This is a model-driven planning tool, not a guarantee of future points, and the technical details stay one click away.
-            </p>
-          </div>
-          <Link
-            href="/about-model"
-            className="inline-flex items-center justify-center rounded-xl border border-fpl-border bg-fpl-bg px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:border-fpl-green/40 hover:text-fpl-green"
-          >
-            How predictions work
-          </Link>
-        </div>
-
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <TrustStat
-            label="Predictions updated"
-            value={formatRelativeTime(modelStatus?.latest_prediction_timestamp)}
-            detail={
-              currentGameweek
-                ? `Ready for GW ${currentGameweek}`
-                : modelStatus?.latest_prediction_timestamp
-                  ? "Saved prediction snapshot available"
-                  : "Waiting for the next scoring run"
-            }
-          />
-          <TrustStat
-            label="Model version"
-            value={modelStatus?.model_version ? compactModelName(modelStatus.model_version) : "Pending"}
-            detail={modelStatus?.model_version ?? "Model metadata will appear here"}
-          />
-          <TrustStat
-            label="Data freshness"
-            value={friendlyDataStatus(modelStatus?.latest_ingestion_run?.status)}
-            detail={buildFreshnessDetail(modelStatus)}
-          />
-          <TrustStat
-            label="Coverage"
-            value={buildCoverageValue(modelStatus)}
-            detail="Historical FPL + fixture context"
-          />
-        </div>
+          <EmptyState title="Live forecast unavailable" body="The weekly refresh has not produced current player forecasts. Resume Supabase or wait for the scheduled model run." />
+          )}
       </section>
     </div>
-  );
-}
-
-function HeroStat({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-fpl-muted">{label}</p>
-      <p className="mt-2 text-lg font-bold text-white">{value}</p>
-      <p className="mt-1 text-xs text-gray-400">{detail}</p>
-    </div>
-  );
-}
-
-function RecommendationCard({
-  title,
-  headline,
-  detail,
-  footnote,
-  accent = "default",
-}: {
-  title: string;
-  headline: string;
-  detail: string;
-  footnote: string;
-  accent?: "default" | "green" | "amber";
-}) {
-  const accentClasses =
-    accent === "green"
-      ? "border-fpl-green/30 bg-[linear-gradient(160deg,_rgba(0,255,133,0.08),_rgba(22,22,22,1))]"
-      : accent === "amber"
-        ? "border-yellow-500/25 bg-[linear-gradient(160deg,_rgba(234,179,8,0.06),_rgba(22,22,22,1))]"
-        : "border-fpl-border bg-fpl-card";
-
-  return (
-    <div className={`rounded-2xl border p-5 ${accentClasses}`}>
-      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-fpl-muted">{title}</p>
-      <h3 className="mt-3 text-xl font-bold text-white">{headline}</h3>
-      <p className="mt-2 text-sm text-gray-300">{detail}</p>
-      <p className="mt-4 text-sm text-fpl-muted">{footnote}</p>
-    </div>
-  );
-}
-
-function ActionCard({
-  title,
-  description,
-  href,
-  cta,
-}: {
-  title: string;
-  description: string;
-  href: string;
-  cta: string;
-}) {
-  return (
-    <Link
-      href={href}
-      className="group rounded-2xl border border-fpl-border bg-fpl-card p-5 transition-colors hover:border-fpl-green/35 hover:bg-[#1b1b1b]"
-    >
-      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-muted">Quick action</p>
-      <h2 className="mt-3 text-xl font-bold text-white">{title}</h2>
-      <p className="mt-2 text-sm text-gray-300">{description}</p>
-      <span className="mt-5 inline-flex text-sm font-semibold text-fpl-green transition-colors group-hover:text-fpl-green-dim">
-        {cta}
-      </span>
-    </Link>
   );
 }
 
@@ -544,70 +328,9 @@ function fetchDashboardJson<T>(path: string) {
   return fetchJson<T>(path, { signal: controller.signal }).finally(() => clearTimeout(timeout));
 }
 
-function normalizeModelStatus(status: ModelStatus): ModelStatus {
-  return {
-    ...status,
-    latest_prediction_gameweek: DASHBOARD_GAMEWEEK,
-  };
-}
-
-function playersForDashboardGameweek(players: Player[] | undefined) {
-  if (!players?.length) return [];
-  return players.filter((player) => player.target_gameweek === DASHBOARD_GAMEWEEK);
-}
-
 function formatFixtureLabel(player: Player) {
   if (!player.next_opponent) return "Fixture pending";
   return `${player.next_home ? "vs" : "@"} ${player.next_opponent}`;
-}
-
-function compactModelName(modelVersion: string) {
-  if (modelVersion.includes("hist_gradient")) return "Gradient Boosting";
-  return modelVersion.replace(/_/g, " ");
-}
-
-function formatRelativeTime(value?: string | null) {
-  if (!value) return "Pending";
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-
-  const diffMs = Date.now() - date.getTime();
-  const diffMinutes = Math.round(diffMs / 60000);
-
-  if (diffMinutes < 1) return "Just now";
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
-
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-
-  const diffDays = Math.round(diffHours / 24);
-  return `${diffDays}d ago`;
-}
-
-function friendlyDataStatus(value?: string) {
-  if (!value) return "Pending";
-  if (value === "completed") return "Fresh";
-  if (value === "snapshot_only") return "Saved snapshot";
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function buildFreshnessDetail(modelStatus: ModelStatus | null) {
-  const completedAt = modelStatus?.latest_ingestion_run?.completed_at;
-  if (completedAt) return formatRelativeTime(completedAt);
-  if (modelStatus?.latest_prediction_timestamp) {
-    return `Saved predictions refreshed ${formatRelativeTime(modelStatus.latest_prediction_timestamp)}`;
-  }
-  return "Prediction metadata will appear here";
-}
-
-function buildCoverageValue(modelStatus: ModelStatus | null) {
-  const rows = modelStatus?.latest_training_run?.rows_inserted;
-  if (rows) return `${rows.toLocaleString()} rows`;
-  if (modelStatus?.evaluation?.training_rows) {
-    return `${modelStatus.evaluation.training_rows.toLocaleString()} train rows`;
-  }
-  return "Historical data";
 }
 
 function buildSavedSquadSummary(players: Player[], lineup: Player[]) {
@@ -615,9 +338,6 @@ function buildSavedSquadSummary(players: Player[], lineup: Player[]) {
   const sortedByPrediction = [...players].sort(
     (a, b) => (b.predicted_points || 0) - (a.predicted_points || 0)
   );
-  const differentialCandidates = players
-    .filter((player) => player.selected_by_percent <= 15)
-    .sort((a, b) => (b.predicted_points || 0) - (a.predicted_points || 0));
   const benchingDecision = [...players]
     .filter((player) => !lineup.some((starter) => starter.id === player.id))
     .sort((a, b) => (b.predicted_points || 0) - (a.predicted_points || 0))[0];
@@ -625,6 +345,5 @@ function buildSavedSquadSummary(players: Player[], lineup: Player[]) {
   return {
     captain: sortedByPrediction[0],
     benchingDecision: benchingDecision ?? null,
-    differential: differentialCandidates[0] ?? null,
   };
 }

@@ -1,17 +1,36 @@
-backend/__pycache__/
-backend/.pytest_cache/
-backend/fpl_copilot.db
-backend/.env
+# Python
+**/__pycache__/
+**/.pytest_cache/
+*.py[cod]
+backend/venv/
+
+# Local data, reports, and experiment output
+*.db
+*.sqlite
+*.sqlite3
+backend/mlruns/
 backend/reports/artifacts/
 backend/reports/latest_predictions.json
-backend/reports/latest_evaluation.json
-backend/venv/
-backend/mlruns/
+
+# Frontend build and dependencies
 frontend/.next/
-frontend/.env.local
 frontend/node_modules/
-*.pyc
 *.tsbuildinfo
-.DS_Store
+
+# Local environment files (keep documented examples)
+.env
+.env.*
+!**/.env.example
+!**/.env.production.example
+!frontend/.env.local.example
+frontend/.env.local
+backend/.env
+
+# Internal agent/workflow state
+.rpiv/
 AGENTS.md
 gitdata/
+
+# OS/editor
+.DS_Store
+.vercel

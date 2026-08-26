@@ -21,7 +21,7 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r requirements.txt
       - name: Run focused backend tests
-        run: python -m pytest tests/test_config.py tests/test_database_repository.py tests/test_optimizer.py
+        run: python -m pytest tests/test_config.py tests/test_database_repository.py tests/test_modeling.py tests/test_optimizer.py tests/test_public_contract.py
 
   frontend:
     name: Frontend build

@@ -1,8 +1,15 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import FDRBadge from "@/components/FDRBadge";
+import PredictionStatus from "@/components/PredictionStatus";
 import clsx from "clsx";
 import { fetchJson } from "@/lib/api";
+import { EMPTY_PREDICTION_METADATA } from "@/lib/prediction-fallback";
+import {
+  derivePredictionGameweek,
+  resolveServingMode,
+  type PredictionMetadata,
+} from "@/lib/prediction-meta";
 
 type SortKey =
   | "predicted_points"
@@ -25,6 +32,8 @@ interface Player {
   selected_by_percent: number;
   predicted_points?: number;
   confidence?: string;
+  target_gameweek?: number;
+  prediction_timestamp?: string;
   next_fdr?: number;
   next_opponent?: string;
   next_home?: boolean;
@@ -37,6 +46,7 @@ const POSITIONS = ["All", "GKP", "DEF", "MID", "FWD"];
 
 export default function PlayersPage() {
   const [players, setPlayers] = useState<Player[]>([]);
+  const [metadata, setMetadata] = useState<PredictionMetadata>(EMPTY_PREDICTION_METADATA);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [pos, setPos] = useState("All");
@@ -50,13 +60,19 @@ export default function PlayersPage() {
       try {
         // Single request: /api/players already joins predictions + hydration (same as /api/predict baseline).
         // Avoids loading and serializing ~700 players twice (major latency improvement).
-        const pl = await fetchJson<{ players?: Player[] }>(
+        const pl = await fetchJson<{ players?: Player[] } & PredictionMetadata>(
           "/api/players?limit=700&sort_by=predicted_points"
         );
-        setPlayers(pl.players || []);
+        if (pl.players?.length && pl.serving_mode === "database") {
+          setPlayers(pl.players);
+          setMetadata(pl);
+        } else {
+          setError("The live API did not return current database-backed player rows. Wait for the weekly refresh to finish.");
+        }
       } catch (e: any) {
-        setPlayers([]);
-        setError(e.message || "Unable to load player data right now. Try again shortly.");
+        setError(
+          e.message || "Unable to load live player data right now."
+        );
       } finally {
         setLoading(false);
       }
@@ -109,18 +125,29 @@ export default function PlayersPage() {
   const POS_COLORS: Record<string, string> = {
     GKP: "text-yellow-400", DEF: "text-blue-400", MID: "text-fpl-green", FWD: "text-red-400",
   };
-  const CONF_COLORS: Record<string, string> = {
-    high: "text-fpl-green", medium: "text-yellow-400", low: "text-red-400",
-  };
+  const targetGameweek = derivePredictionGameweek({ metadata, players });
+  const servingMode = resolveServingMode(metadata);
 
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-extrabold text-white">Players</h1>
-        <p className="text-fpl-muted text-sm mt-0.5">
-          Browse the full prediction pool, compare model scores against form and ownership, and build shortlists for transfers or captaincy.
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Player research</p>
+        <h1 className="mt-2 text-2xl font-extrabold text-white">Next-gameweek point forecasts</h1>
+        <p className="mt-1 max-w-3xl text-sm text-fpl-muted">
+          Sort the model target alongside form, price, ownership, ICT, minutes, and fixture difficulty. These fields provide evidence context; none guarantees future points.
         </p>
       </div>
+
+      <PredictionStatus
+        mode={servingMode}
+        gameweek={targetGameweek}
+        generatedAt={metadata.generated_at ?? players[0]?.prediction_timestamp}
+        provenance={metadata.prediction_provenance}
+        modelVersion={metadata.model_version}
+        isStale={metadata.is_stale}
+        warning={metadata.serving_warning}
+        compact
+      />
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
@@ -147,13 +174,24 @@ export default function PlayersPage() {
       </div>
 
       {loading ? (
-        <div className="text-fpl-muted animate-pulse">Loading players...</div>
-      ) : error ? (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-red-400 text-sm">
-          {error}
+        <div className="rounded-lg border border-fpl-border bg-fpl-card px-4 py-3 text-sm text-fpl-muted">
+          Loading live player data…
+        </div>
+      ) : null}
+
+      {players.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-fpl-border bg-fpl-card px-5 py-8 text-center">
+          <p className="text-lg font-semibold text-white">No prediction rows returned</p>
+          <p className="mt-2 text-sm text-fpl-muted">The request succeeded, but there is no player pool to inspect.</p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-fpl-border">
+        <>
+          {error ? (
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200">
+              {error}
+            </div>
+          ) : null}
+          <div className="overflow-x-auto rounded-xl border border-fpl-border">
           <table className="w-full text-sm">
             <thead className="bg-fpl-card border-b border-fpl-border">
               <tr>
@@ -168,7 +206,13 @@ export default function PlayersPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p, i) => (
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-fpl-muted">
+                    No players match the active position and search filters.
+                  </td>
+                </tr>
+              ) : filtered.map((p, i) => (
                 <tr
                   key={p.id}
                   className={clsx(
@@ -184,16 +228,9 @@ export default function PlayersPage() {
                     </div>
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-fpl-green">
-                        {p.predicted_points?.toFixed(1) ?? "—"}
-                      </span>
-                      {p.confidence && (
-                        <span className={clsx("text-[10px] font-medium", CONF_COLORS[p.confidence])}>
-                          {p.confidence}
-                        </span>
-                      )}
-                    </div>
+                    <span className="font-bold text-fpl-green">
+                      {p.predicted_points?.toFixed(1) ?? "—"}
+                    </span>
                   </td>
                   <td className="px-3 py-2 font-medium text-white">{p.form}</td>
                   <td className="px-3 py-2 text-white">£{p.price?.toFixed(1)}m</td>
@@ -209,7 +246,8 @@ export default function PlayersPage() {
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       )}
     </div>
   );

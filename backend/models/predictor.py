@@ -6,6 +6,8 @@ Uses a weighted scoring formula:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from data.fpl_client import (
     get_bootstrap,
     get_fixtures,
@@ -14,6 +16,8 @@ from data.fpl_client import (
     get_next_fixture_fdr,
     get_current_gameweek,
 )
+
+FORMULA_MODEL_VERSION = "weighted_formula_v1"
 
 # Position scoring multipliers for the formula
 _POS_MULTIPLIER = {"GKP": 0.7, "DEF": 0.85, "MID": 1.0, "FWD": 1.05}
@@ -109,6 +113,7 @@ def predict_players() -> list[dict]:
     team_fixtures = get_next_fixture_fdr(bootstrap, fixtures)
     team_map = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
     current_gw = get_current_gameweek(bootstrap)
+    generated_at = datetime.now(timezone.utc).isoformat()
 
     results = []
     for player in players:
@@ -128,6 +133,7 @@ def predict_players() -> list[dict]:
 
         predicted_points = _fallback_score(player, fdr, minutes, gws_played)
         model_used = "formula"
+        target_gameweek = next_fixtures[0].get("gameweek", current_gw) if next_fixtures else current_gw
 
         opponent_team_id = next_fixtures[0]["opponent_id"] if next_fixtures else None
         opponent = team_map.get(opponent_team_id, "UNK") if opponent_team_id else "UNK"
@@ -137,6 +143,9 @@ def predict_players() -> list[dict]:
             "predicted_points": predicted_points,
             "confidence": confidence,
             "model_used": model_used,
+            "model_version": FORMULA_MODEL_VERSION,
+            "prediction_timestamp": generated_at,
+            "target_gameweek": target_gameweek,
             "next_fdr": fdr,
             "next_home": home,
             "next_opponent": opponent,

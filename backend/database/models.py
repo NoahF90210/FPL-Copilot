@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -23,7 +23,7 @@ class Team(Base):
     strength_attack_away: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strength_defence_home: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strength_defence_away: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Player(Base):
@@ -61,7 +61,7 @@ class Player(Base):
     chance_of_playing_next_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
     news: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(5), default="a", index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     team: Mapped[Team] = relationship("Team")
 
@@ -80,18 +80,21 @@ class Fixture(Base):
     team_a_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     team_h_difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     team_a_difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class PlayerGameweekStat(Base):
     __tablename__ = "player_gameweek_stats"
-    __table_args__ = (UniqueConstraint("player_id", "fixture_id", name="uq_player_fixture"),)
+    __table_args__ = (
+        UniqueConstraint("player_id", "fixture_id", "season", name="uq_player_fixture_season"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
     opponent_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     fixture_id: Mapped[int | None] = mapped_column(ForeignKey("fixtures.id"), nullable=True)
+    season: Mapped[str] = mapped_column(String(9), default="legacy", index=True)
     gameweek: Mapped[int] = mapped_column(Integer, index=True)
     was_home: Mapped[bool] = mapped_column(default=False)
     minutes: Mapped[int] = mapped_column(Integer, default=0)
@@ -120,16 +123,17 @@ class PlayerGameweekStat(Base):
     expected_assists: Mapped[float] = mapped_column(Float, default=0.0)
     expected_goal_involvements: Mapped[float] = mapped_column(Float, default=0.0)
     opponent_fdr: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class TeamGameweekStat(Base):
     __tablename__ = "team_gameweek_stats"
-    __table_args__ = (UniqueConstraint("team_id", "gameweek", name="uq_team_gameweek"),)
+    __table_args__ = (UniqueConstraint("team_id", "gameweek", "season", name="uq_team_gameweek_season"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    season: Mapped[str] = mapped_column(String(9), default="legacy", index=True)
     gameweek: Mapped[int] = mapped_column(Integer, index=True)
     matches_played: Mapped[int] = mapped_column(Integer, default=0)
     total_points: Mapped[int] = mapped_column(Integer, default=0)
@@ -138,7 +142,7 @@ class TeamGameweekStat(Base):
     total_assists: Mapped[int] = mapped_column(Integer, default=0)
     total_clean_sheets: Mapped[int] = mapped_column(Integer, default=0)
     total_expected_goal_involvements: Mapped[float] = mapped_column(Float, default=0.0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class ModelPrediction(Base):
@@ -151,7 +155,7 @@ class ModelPrediction(Base):
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
     target_gameweek: Mapped[int] = mapped_column(Integer, index=True)
     model_version: Mapped[str] = mapped_column(String(100), index=True)
-    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    prediction_timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     predicted_points: Mapped[float] = mapped_column(Float)
     baseline_points: Mapped[float] = mapped_column(Float, default=0.0)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -169,5 +173,5 @@ class PipelineRun(Base):
     rows_updated: Mapped[int] = mapped_column(Integer, default=0)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

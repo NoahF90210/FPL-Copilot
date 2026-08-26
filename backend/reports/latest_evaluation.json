@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-08-24T23:15:32.905290",
+  "model_version": "ridge_recent_form_v1",
+  "baseline_version": "recent_points_average_v1",
+  "feature_columns": [
+    "rolling_points_5",
+    "rolling_minutes_5",
+    "opponent_fdr"
+  ],
+  "primary_metric": "mae",
+  "validation_strategy": "later_gameweek_holdout",
+  "validation_gameweeks": [
+    31,
+    32,
+    33,
+    34,
+    35
+  ],
+  "baseline": {
+    "mae": 0.9808656036446469,
+    "rmse": 2.02016410769515
+  },
+  "model": {
+    "mae": 1.0006984039591487,
+    "rmse": 1.9077235971185371
+  },
+  "training_rows": 21859,
+  "validation_rows": 3951
+}

@@ -6,5 +6,3 @@ fpl_copilot.db
 mlruns/
 reports/artifacts/
 reports/latest_predictions.json
-reports/latest_evaluation.json
-reports/latest_evaluation.md

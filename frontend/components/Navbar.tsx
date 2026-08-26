@@ -8,6 +8,7 @@ const links = [
   { href: "/players", label: "Players" },
   { href: "/squad", label: "My Squad" },
   { href: "/optimize", label: "Optimizer" },
+  { href: "/about-model", label: "Model" },
 ];
 
 export default function Navbar() {

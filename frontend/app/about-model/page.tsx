@@ -2,197 +2,186 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import PredictionStatus from "@/components/PredictionStatus";
 import { fetchJson } from "@/lib/api";
+import { EMPTY_MODEL_STATUS } from "@/lib/prediction-fallback";
+import {
+  formatPredictionDate,
+  resolveServingMode,
+  type ModelStatus,
+} from "@/lib/prediction-meta";
 
-interface ModelStatus {
-  latest_ingestion_run?: {
-    completed_at?: string | null;
-    status?: string;
-    rows_inserted?: number;
-  } | null;
-  latest_training_run?: {
-    completed_at?: string | null;
-    status?: string;
-    rows_inserted?: number;
-  } | null;
-  latest_prediction_timestamp?: string | null;
-  latest_prediction_gameweek?: number | null;
-  model_version?: string | null;
-  evaluation?: {
-    baseline?: { mae?: number; rmse?: number };
-    model?: { mae?: number; rmse?: number };
-    validation_gameweeks?: number[];
-    training_rows?: number;
-    validation_rows?: number;
-  } | null;
-  database_status?: string;
-}
+const FEATURES = [
+  "Rolling points over the latest five appearances",
+  "Rolling minutes over the latest five appearances",
+  "Next-opponent fixture difficulty",
+];
 
 export default function AboutModelPage() {
-  const [status, setStatus] = useState<ModelStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<ModelStatus>(EMPTY_MODEL_STATUS);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
-        setError(null);
+        setNotice(null);
         setStatus(await fetchJson<ModelStatus>("/api/model-status"));
       } catch (err: any) {
-        setError(err.message || "Unable to load model details right now. The rest of the app can still be explored.");
+        setNotice(
+          err.message ||
+            "Model status could not refresh. Live serving details will appear when the API is available."
+        );
+      } finally {
+        setLoading(false);
       }
     }
 
     load();
   }, []);
 
-  const evaluation = status?.evaluation;
+  const evaluation = status.evaluation;
+  const servingMode = resolveServingMode(null, status);
 
   return (
     <div className="space-y-6">
       <section className="rounded-[28px] border border-fpl-border bg-[radial-gradient(circle_at_top_left,_rgba(0,255,133,0.10),_transparent_28%),linear-gradient(135deg,_#161616_0%,_#101010_100%)] p-6 sm:p-8">
-        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-fpl-green">How predictions work</p>
-        <h1 className="mt-3 text-3xl font-extrabold text-white sm:text-4xl">The technical layer, without taking over the homepage.</h1>
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-fpl-green">Model card</p>
+        <h1 className="mt-3 text-3xl font-extrabold text-white sm:text-4xl">
+          Forecast next-gameweek player points, then expose the evidence.
+        </h1>
         <p className="mt-3 max-w-3xl text-sm text-gray-300 sm:text-base">
-          FPL Copilot blends historical FPL scoring, recent player form, and fixture context to generate weekly player projections. This page gives a recruiter-friendly view of the model inputs, evaluation snapshot, and data freshness without turning the whole app into a technical dashboard.
+          FPL Copilot uses a compact Ridge regression to forecast next-gameweek player points from recent performance, minutes, and fixture difficulty.
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
-          <Link
-            href="/"
-            className="rounded-xl bg-fpl-green px-4 py-2.5 text-sm font-bold text-black transition-colors hover:bg-fpl-green-dim"
-          >
-            Back to Gameweek Hub
+          <Link href="/players" className="rounded-xl bg-fpl-green px-4 py-2.5 text-sm font-bold text-black transition-colors hover:bg-fpl-green-dim">
+            Inspect predictions
           </Link>
-          <Link
-            href="/players"
-            className="rounded-xl border border-fpl-border bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:border-fpl-green/40 hover:bg-fpl-green/10"
-          >
-            See predictions
+          <Link href="/" className="rounded-xl border border-fpl-border bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:border-fpl-green/40 hover:bg-fpl-green/10">
+            Back to dashboard
           </Link>
+        </div>
+        <div className="mt-5">
+          <PredictionStatus
+            mode={servingMode}
+            gameweek={status.target_gameweek ?? status.latest_prediction_gameweek}
+            generatedAt={status.generated_at ?? status.latest_prediction_timestamp}
+            provenance={status.prediction_provenance}
+            modelVersion={status.model_version}
+            isStale={status.is_stale}
+            warning={status.serving_warning}
+          />
         </div>
       </section>
 
-      {error && (
+      {notice ? (
         <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200">
-          {error}
+          {notice}
         </div>
-      )}
+      ) : loading ? (
+        <div className="rounded-xl border border-fpl-border bg-fpl-card px-4 py-3 text-sm text-fpl-muted">
+          Loading live model status…
+        </div>
+      ) : null}
 
       <section className="grid gap-4 lg:grid-cols-3">
-        <InfoCard
-          title="Inputs"
-          body="Recent FPL performance, fixture difficulty, ownership, price, minutes, and rolling player form all help shape the weekly predictions."
+        <MethodCard
+          eyebrow="Prediction target"
+          title="Next-gameweek FPL points"
+          body="The scoring pipeline produces one forecast per available player for the next target gameweek. The historical training rows are fixture-level, so double-gameweek aggregation remains a known limitation."
         />
-        <InfoCard
-          title="Model flow"
-          body="The app ingests FPL data, refreshes its warehouse tables, trains the latest model, and stores scored predictions for the recommendation and optimizer flows."
+        <MethodCard
+          eyebrow="Main model"
+          title="Ridge regression"
+          body="A regularized linear model turns the three inputs into a transparent next-gameweek forecast."
         />
-        <InfoCard
-          title="Why it matters"
-          body="Predictions are most useful for tie-breakers: captaincy calls, shortlists, differentials, and budget-efficient squad construction."
+        <MethodCard
+          eyebrow="Baseline"
+          title="Recent-points average"
+          body="The model is compared with the average points from each player's latest five appearances."
         />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <div className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
-          <h2 className="text-xl font-bold text-white">Model status</h2>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Feature construction</p>
+          <h2 className="mt-2 text-xl font-bold text-white">What the trained pipeline actually uses</h2>
           <p className="mt-2 text-sm text-fpl-muted">
-            A compact view of prediction freshness and whether you are looking at live storage or a saved snapshot.
+            Rolling performance values are shifted before training so each row uses earlier appearances. Numeric features are imputed and scaled; position is one-hot encoded.
           </p>
-
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            <StatusTile
-              label="Prediction gameweek"
-              value={status?.latest_prediction_gameweek ? `GW ${status.latest_prediction_gameweek}` : "Pending"}
-              detail={formatDate(status?.latest_prediction_timestamp)}
-            />
-            <StatusTile
-              label="Model version"
-              value={status?.model_version ? compactModelName(status.model_version) : "Pending"}
-              detail={status?.model_version ?? "Waiting for training metadata"}
-            />
-            <StatusTile
-              label="Last ingestion"
-              value={friendlyStatus(status?.latest_ingestion_run?.status)}
-              detail={formatDate(status?.latest_ingestion_run?.completed_at)}
-            />
-            <StatusTile
-              label="Serving mode"
-              value={friendlyStatus(status?.database_status)}
-              detail={
-                status?.database_status === "degraded"
-                  ? "Using saved model outputs so the public demo stays reliable."
-                  : "Live data path available."
-              }
-            />
-          </div>
+          <ul className="mt-5 grid gap-3 sm:grid-cols-2">
+            {FEATURES.map((feature) => (
+              <li key={feature} className="rounded-xl border border-fpl-border bg-fpl-bg px-4 py-3 text-sm text-gray-300">
+                {feature}
+              </li>
+            ))}
+          </ul>
         </div>
 
         <div className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
-          <h2 className="text-xl font-bold text-white">Evaluation snapshot</h2>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Time-based validation</p>
+          <h2 className="mt-2 text-xl font-bold text-white">Latest evaluation</h2>
           <p className="mt-2 text-sm text-fpl-muted">
-            Lower MAE and RMSE are better. These compare the baseline against the trained model on held-out gameweeks.
+            The pipeline holds out later gameweeks rather than randomly mixing future rows into training. MAE is the average absolute player-point error; RMSE penalizes larger misses more heavily. Lower is better.
           </p>
 
           <div className="mt-5 space-y-3">
+            <MetricRow label="Ridge baseline" primary={formatMetric(evaluation?.baseline?.mae)} secondary={formatRmse(evaluation?.baseline?.rmse)} />
+            <MetricRow label="Ridge regression" primary={formatMetric(evaluation?.model?.mae)} secondary={formatRmse(evaluation?.model?.rmse)} highlight />
             <MetricRow
-              label="Baseline MAE"
-              primary={formatMetric(evaluation?.baseline?.mae)}
-              secondary={formatSecondaryMetric(evaluation?.baseline?.rmse)}
-            />
-            <MetricRow
-              label="Model MAE"
-              primary={formatMetric(evaluation?.model?.mae)}
-              secondary={formatSecondaryMetric(evaluation?.model?.rmse)}
-              highlight
-            />
-            <MetricRow
-              label="Validation gameweeks"
-              primary={
-                evaluation?.validation_gameweeks?.length
-                  ? evaluation.validation_gameweeks.join(", ")
-                  : "Pending"
-              }
-              secondary={`Train rows: ${evaluation?.training_rows ?? 0} · Validation rows: ${evaluation?.validation_rows ?? 0}`}
+              label="Holdout gameweeks"
+              primary={evaluation?.validation_gameweeks?.length ? evaluation.validation_gameweeks.join("–") : "Unavailable"}
+              secondary={formatRows(evaluation?.training_rows, evaluation?.validation_rows)}
             />
           </div>
+          <p className="mt-4 text-xs text-fpl-muted">Evaluation values come from the latest training run recorded by the live model service.</p>
+        </div>
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+        <div className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-green">Live serving status</p>
+          <h2 className="mt-2 text-xl font-bold text-white">Current data, current forecast</h2>
+          <div className="mt-5 space-y-3">
+            <StatusRow label="Prediction gameweek" value={(status.target_gameweek ?? status.latest_prediction_gameweek) ? `GW ${status.target_gameweek ?? status.latest_prediction_gameweek}` : "Unavailable"} />
+            <StatusRow label="Prediction generated" value={formatPredictionDate(status.generated_at ?? status.latest_prediction_timestamp)} />
+            <StatusRow label="Model version" value={status.model_version ?? "Unavailable"} />
+            <StatusRow label="Database connection" value={friendlyDatabaseStatus(status.database_status)} />
+          </div>
+          <p className="mt-4 text-sm text-fpl-muted">
+            Forecast rows come from the live Supabase database. The weekly refresh ingests official FPL data, retrains the model, and writes the next target gameweek back to the database.
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-yellow-500/25 bg-yellow-500/5 p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-yellow-200">Current model context</p>
+          <h2 className="mt-2 text-xl font-bold text-white">How to read the evaluation</h2>
+          <ul className="mt-4 space-y-3 text-sm text-gray-300">
+            <li>Historical rows combine player-gameweek history with current player context fields, with point-in-time handling as an active engineering focus.</li>
+            <li>The recorded holdout covers five later gameweeks and gives the product a current player-point evaluation reference.</li>
+            <li>The scoring workflow incorporates player availability, recent minutes, and fixture difficulty into the next-gameweek forecast.</li>
+            <li>The optimizer compares legal 15-player squads and transfer choices using listed prices and transfer-hit costs.</li>
+            <li>The product presents model status, prediction provenance, target gameweek, and generation time alongside the forecast.</li>
+          </ul>
         </div>
       </section>
     </div>
   );
 }
 
-function InfoCard({ title, body }: { title: string; body: string }) {
+function MethodCard({ eyebrow, title, body }: { eyebrow: string; title: string; body: string }) {
   return (
     <div className="rounded-2xl border border-fpl-border bg-fpl-card p-5">
-      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-muted">{title}</p>
-      <p className="mt-3 text-sm text-gray-300">{body}</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-fpl-muted">{eyebrow}</p>
+      <h2 className="mt-3 text-xl font-bold text-white">{title}</h2>
+      <p className="mt-2 text-sm text-gray-300">{body}</p>
     </div>
   );
 }
 
-function StatusTile({ label, value, detail }: { label: string; value: string; detail: string }) {
+function MetricRow({ label, primary, secondary, highlight }: { label: string; primary: string; secondary: string; highlight?: boolean }) {
   return (
-    <div className="rounded-xl border border-fpl-border bg-fpl-bg px-4 py-3">
-      <p className="text-[10px] uppercase tracking-[0.22em] text-fpl-muted">{label}</p>
-      <p className="mt-2 text-sm font-semibold text-white">{value}</p>
-      <p className="mt-1 text-xs text-fpl-muted">{detail}</p>
-    </div>
-  );
-}
-
-function MetricRow({
-  label,
-  primary,
-  secondary,
-  highlight,
-}: {
-  label: string;
-  primary: string;
-  secondary: string;
-  highlight?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-xl border border-fpl-border bg-fpl-bg px-4 py-3">
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-fpl-border bg-fpl-bg px-4 py-3">
       <div>
         <p className="text-sm font-semibold text-white">{label}</p>
         <p className="mt-1 text-xs text-fpl-muted">{secondary}</p>
@@ -202,35 +191,30 @@ function MetricRow({
   );
 }
 
-function compactModelName(modelVersion: string) {
-  if (modelVersion.includes("hist_gradient")) return "Gradient Boosting";
-  return modelVersion.replace(/_/g, " ");
+function StatusRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4 border-b border-fpl-border pb-3 last:border-0 last:pb-0">
+      <span className="text-sm text-fpl-muted">{label}</span>
+      <span className="text-right text-sm font-semibold text-white">{value}</span>
+    </div>
+  );
 }
 
-function friendlyStatus(value?: string) {
-  if (!value) return "Pending";
-  if (value === "snapshot_only") return "Snapshot only";
-  if (value === "degraded") return "Snapshot-backed demo";
-  if (value === "healthy") return "Live database";
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function formatDate(value?: string | null) {
-  if (!value) return "Not available yet";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+function friendlyDatabaseStatus(value?: string) {
+  if (value === "connected") return "Connected";
+  if (value === "unavailable" || value === "degraded") return "Unavailable; live data paused";
+  return "Unknown";
 }
 
 function formatMetric(value?: number) {
-  return value !== undefined ? value.toFixed(3) : "Pending";
+  return value !== undefined ? `MAE ${value.toFixed(3)}` : "Unavailable";
 }
 
-function formatSecondaryMetric(value?: number) {
-  return value !== undefined ? `RMSE ${value.toFixed(3)}` : "RMSE pending";
+function formatRmse(value?: number) {
+  return value !== undefined ? `RMSE ${value.toFixed(3)}` : "RMSE unavailable";
+}
+
+function formatRows(training?: number, validation?: number) {
+  if (training === undefined || validation === undefined) return "Row counts unavailable";
+  return `${training.toLocaleString()} training rows · ${validation.toLocaleString()} validation rows`;
 }

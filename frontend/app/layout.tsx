@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "FPL Copilot",
     description:
-      "Weekly FPL player projections, fixture-aware recommendations, and transfer planning in a deployed full-stack analytics app.",
+      "Next-gameweek FPL point forecasts, fixture context, legal squad planning, and transfer-hit comparison in a full-stack analytics app.",
     url: "https://fpl-copilot.tech",
     siteName: "FPL Copilot",
     type: "website",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,7 @@ def save_pipeline_run(
         rows_updated=rows_updated,
         metadata_json=metadata_json,
         error_message=error_message,
-        started_at=started_at or datetime.utcnow(),
+        started_at=started_at or datetime.now(timezone.utc),
         completed_at=completed_at,
     )
     session.add(run)
@@ -156,8 +156,15 @@ def fetch_latest_predictions(session: Session) -> list[dict[str, Any]]:
     return [player for player in players if player.get("predicted_points") is not None]
 
 
-def fetch_upcoming_fixtures(session: Session) -> dict[int, list[dict[str, Any]]]:
-    stmt = select(Fixture).where(Fixture.finished.is_(False)).order_by(Fixture.gameweek.asc(), Fixture.id.asc())
+def fetch_upcoming_fixtures(
+    session: Session,
+    *,
+    from_gameweek: int | None = None,
+) -> dict[int, list[dict[str, Any]]]:
+    stmt = select(Fixture).where(Fixture.finished.is_(False))
+    if from_gameweek is not None:
+        stmt = stmt.where(Fixture.gameweek >= from_gameweek)
+    stmt = stmt.order_by(Fixture.gameweek.asc(), Fixture.id.asc())
     fixtures = session.execute(stmt).scalars().all()
     upcoming: dict[int, list[dict[str, Any]]] = {}
 
@@ -180,10 +187,17 @@ def fetch_upcoming_fixtures(session: Session) -> dict[int, list[dict[str, Any]]]
 
 def hydrate_prediction_context(session: Session, players: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     team_names = {team.id: team.short_name for team in session.execute(select(Team)).scalars().all()}
-    team_fixtures = fetch_upcoming_fixtures(session)
+    player_rows = list(players)
+    target_gameweeks: list[int] = []
+    for player in player_rows:
+        target = player.get("target_gameweek")
+        if isinstance(target, int):
+            target_gameweeks.append(target)
+    target_gameweek = max(target_gameweeks) if target_gameweeks else None
+    team_fixtures = fetch_upcoming_fixtures(session, from_gameweek=target_gameweek)
     hydrated = []
 
-    for player in players:
+    for player in player_rows:
         next_fixtures = team_fixtures.get(player["team_id"], [])
         next_fixture = next_fixtures[0] if next_fixtures else None
         hydrated.append(
@@ -234,33 +248,53 @@ def fetch_model_status(session: Session) -> dict[str, Any]:
     latest_ingestion = latest_pipeline_run(session, "ingestion")
     latest_training = latest_pipeline_run(session, "training")
     latest_prediction = latest_prediction_metadata(session)
-    report = load_evaluation_report() or {}
-    snapshot = load_prediction_snapshot() or {}
-
+    report = (
+        latest_training.metadata_json
+        if latest_training and isinstance(latest_training.metadata_json, dict)
+        else load_evaluation_report() or {}
+    )
     latest_prediction_timestamp = (
         latest_prediction.prediction_timestamp.isoformat()
         if latest_prediction and latest_prediction.prediction_timestamp
-        else snapshot.get("generated_at")
+        else None
     )
     latest_prediction_gameweek = (
         latest_prediction.target_gameweek
         if latest_prediction and latest_prediction.target_gameweek is not None
-        else snapshot.get("target_gameweek")
+        else None
     )
     model_version = (
         latest_prediction.model_version
         if latest_prediction and latest_prediction.model_version
-        else snapshot.get("model_version") or report.get("model_version")
+        else report.get("model_version")
     )
 
     return {
-        "latest_ingestion_run": serialize_pipeline_run(latest_ingestion),
-        "latest_training_run": serialize_pipeline_run(latest_training),
+        "latest_ingestion_run": serialize_pipeline_summary(latest_ingestion),
+        "latest_training_run": serialize_pipeline_summary(latest_training),
         "latest_prediction_timestamp": latest_prediction_timestamp,
         "latest_prediction_gameweek": latest_prediction_gameweek,
         "model_version": model_version,
         "evaluation": report,
         "database_status": "connected",
+        "prediction_serving_mode": "database" if latest_prediction else "unavailable",
+    }
+
+
+def serialize_pipeline_summary(run: PipelineRun | None) -> dict[str, Any] | None:
+    if run is None:
+        return None
+    return {
+        "id": run.id,
+        "run_type": run.run_type,
+        "status": run.status,
+        "source_endpoints": run.source_endpoints,
+        "rows_inserted": run.rows_inserted,
+        "rows_updated": run.rows_updated,
+        "metadata_json": None,
+        "error_message": None,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
     }
 
 

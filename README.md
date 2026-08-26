@@ -1,189 +1,93 @@
 # FPL Copilot
 
-[![CI](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/ci.yml)
-[![Weekly Data Refresh](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/daily-data-refresh.yml/badge.svg)](https://github.com/NoahF90210/FPL-Copilot/actions/workflows/daily-data-refresh.yml)
+**[Open FPL Copilot](https://fpl-copilot.tech)**
 
-FPL Copilot turns Fantasy Premier League data into a deployed weekly decision workspace for captaincy, squad analysis, player research, and transfer-aware optimization.
+FPL Copilot is a Fantasy Premier League decision-support app built around one practical question:
 
-**Live app:** [fpl-copilot.tech](https://fpl-copilot.tech)  
-**Source / Repository:** [https://github.com/NoahF90210/FPL-Copilot](https://github.com/NoahF90210/FPL-Copilot)  
-**Best 30-second path:** open the dashboard, scan this week's captain/differential/fixture signals, sort the player browser by predicted points, open My Squad to see rule-aware lineup/captaincy planning, then run the Optimizer to compare transfer moves after hits.
+> Which players are most likely to score well in the next gameweek, and what should I do with that information?
 
-## Portfolio Snapshot
+The app turns official FPL data into a ranked player forecast, then carries that forecast into squad construction and transfer planning.
 
-| Area | Snapshot |
-|---|---|
-| Product | Deployed Next.js + FastAPI FPL planning app, not just a notebook or model script |
-| User problem | Weekly FPL choices require trading off points upside against budget, transfer limits, positions, fixtures, ownership, and points hits |
-| Data | Official FPL data, player prices, positions, ownership, form, minutes, ICT/BPS-style signals, fixture context, and saved prediction artifacts |
-| Modeling | Ridge baseline and `HistGradientBoostingRegressor` model with time-based validation over gameweeks 31-35 |
-| Latest tracked evaluation | Gradient Boosting MAE `0.947`, RMSE `1.871`; Ridge baseline MAE `0.990`, RMSE `1.890` |
-| Product workflow | Dashboard recommendations -> player research -> saved squad analysis -> transfer-aware optimizer -> model status check |
-| Reliability | API attempts live database reads and falls back to saved report artifacts when storage is unavailable |
-| Visual status | Production PNG screenshots live in `docs/screenshots/` (see **Screenshots**); optional GIF still TODO |
+## The product
 
-## 30-Second Demo Path
+The dashboard starts with the next-gameweek leaders so the main decision is visible immediately.
 
-1. Open [fpl-copilot.tech](https://fpl-copilot.tech) and read **This Week's Signals** for captaincy, differentials, and fixture targets.
-2. Click **Players** and sort/filter by predicted points, position, price, ownership, form, ICT, and fixture difficulty.
-3. Click **My Squad** to build a 15-player squad, validate FPL rules, set the XI, captain, vice-captain, bench, bank, free transfers, and chip mode.
-4. Click **Optimizer** to compare the saved team against an optimized squad, including budget, must-include/exclude players, free transfers, chips, and points hits.
-5. Click **How predictions work** from the dashboard to see the model inputs, freshness status, and evaluation snapshot.
+Players lets you compare projected points with price, recent form, ownership, minutes, ICT, and fixture difficulty.
 
-## Why This Matters
+My Squad applies the rules of a legal 15-player team and helps set the lineup, captain, vice-captain, and bench.
 
-Fantasy Premier League is a constrained decision-making problem, not a simple "pick the highest projected player" problem. Useful recommendations need to account for budget, transfer limits, position quotas, fixture difficulty, ownership leverage, captaincy upside, bench order, chips, and the cost of extra transfers.
+Optimizer compares squad options and transfer moves while accounting for free transfers, budget, and points hits.
 
-FPL Copilot turns those constraints into a usable planning workflow:
+The Model page explains the prediction target, inputs, validation approach, and current serving context.
 
-- ranked player projections for the next gameweek
-- fixture-aware captaincy and differential recommendations
-- saved squad state across pages
-- rule-aware squad validation for real FPL constraints
-- optimizer output that compares raw upside against transfer hits
-- model freshness and evaluation data surfaced in the UI
+## How the forecast works
 
-## Project Story
+The pipeline ingests the official FPL API into Supabase.
 
-**Problem:** FPL managers make weekly decisions under uncertainty and hard constraints: budget, squad composition, transfer counts, fixtures, captaincy, ownership, and points hits all interact.
+A Ridge regression forecasts next-gameweek player points from three inputs:
 
-**Data:** The backend ingests and serves FPL player data, prices, teams, positions, form, ownership, fixture context, and generated prediction reports. The app can use a live database or saved report artifacts for a reliable public demo.
+- rolling points over the latest five appearances;
+- rolling minutes over the latest five appearances;
+- next-opponent fixture difficulty.
 
-**Modeling approach:** The project compares a Ridge baseline against a gradient boosting model. The latest stored evaluation uses time-based validation across gameweeks 31-35 and tracks MAE/RMSE without claiming leaderboard performance.
+A recent-points average provides a simple comparison baseline.
 
-**Product workflow:** The frontend packages model output into a decision flow: scan weekly recommendations, research players, save a squad, validate legal team structure, and run the optimizer against realistic transfer constraints.
+The model is evaluated with a later-gameweek holdout that follows the forecasting timeline.
 
-**Result:** A deployed full-stack data product where a recruiter can click the live app, see model-backed recommendations, inspect the model status, and understand how predictions become user-facing decisions.
+Experiment tracking runs as optional telemetry while model, report, and prediction writes remain independent.
 
-**Limitations:** FPL outcomes are noisy and affected by late injuries, rotation, tactical changes, and incomplete future information. Current metrics are point-prediction errors from held-out gameweeks, not proof of real-money betting value or guaranteed rank improvement.
+The forecast supports player research, captaincy planning, squad construction, and transfer comparison.
 
-## Screenshots
+## Data freshness
 
-PNG captures below come from [fpl-copilot.tech](https://fpl-copilot.tech) (viewport ~1400×900). They reflect whatever the demo shows at capture time—for example empty local squad saves or model-status placeholders when the frontend has not resolved fresh API fields yet—and are not substitutes for README evaluation numbers, which follow `backend/reports/latest_evaluation.json` only.
+The app reads forecasts from the live Supabase database.
 
-<p>
-  <img src="docs/screenshots/dashboard.png" alt="FPL Copilot dashboard with weekly signals" width="100%" />
-</p>
+A scheduled GitHub Actions workflow refreshes official FPL data and retrains the model every Tuesday.
 
-| Captaincy + Squad Analysis | Player Browser |
-|---|---|
-| <img src="docs/screenshots/squad-analysis.png" alt="FPL Copilot My Squad builder" width="100%" /> | <img src="docs/screenshots/player-browser.png" alt="FPL Copilot Players table with predictions" width="100%" /> |
+After a gameweek deadline passes, the target moves to the next official FPL gameweek even if FPL is still finalizing the previous week's scores.
 
-| Transfer Optimizer | About Model |
-|---|---|
-| <img src="docs/screenshots/optimizer.png" alt="FPL Copilot Squad Optimizer" width="100%" /> | <img src="docs/screenshots/model-status.png" alt="FPL Copilot About Model page" width="100%" /> |
+At the start of a new season, recent player history carries forward from the prior season while current prices, clubs, fixtures, and availability come from the new season.
 
-Older SVG stubs remain in `docs/screenshots/` for offline fallback only. See `docs/screenshots/README.md` for filenames and quick recapture steps (optional GIF TODO).
+Players marked injured, suspended, unavailable, or doubtful are excluded from the scored recommendation pool.
 
-## Tech Stack
+The app surfaces a clear unavailable state whenever the live data service is paused.
 
-- `Next.js` and TypeScript frontend
-- `FastAPI` backend
-- `SQLAlchemy` data layer
-- `Postgres` for production data, with local SQLite fallback
-- `scikit-learn` Ridge baseline and HistGradientBoostingRegressor model
-- `MLflow` experiment tracking
-- `PuLP` optimization for squad selection
-- Dockerized backend runtime
-- GitHub Actions for CI, scheduled ingestion, and model refresh workflows
+## Run locally
 
-## Architecture
-
-```mermaid
-flowchart LR
-  FPL[Official FPL API] --> Ingest[Ingestion Pipeline]
-  Ingest --> DB[(Postgres or SQLite)]
-  DB --> Train[Model Training]
-  Train --> Reports[Prediction and Evaluation Reports]
-  DB --> API[FastAPI Backend]
-  Reports --> API
-  API --> Web[Next.js Frontend]
-  Web --> User[FPL Planning UI]
-```
-
-## Main Product Flows
-
-- **Dashboard:** weekly recommendations, model freshness, and saved squad summary
-- **Players:** sortable prediction table with form, ownership, price, ICT, and fixture context
-- **My Squad:** saved team builder with FPL squad limits, lineup, captaincy, bench, bank, chip, and free-transfer state
-- **Optimizer:** transfer-aware squad comparison that accounts for budget, saved players, free transfers, points hits, and chip scenarios
-- **About Model:** recruiter-friendly model explanation, evaluation snapshot, and data freshness status
-
-## Modeling
-
-- **Baseline model:** Ridge regression
-- **Main model:** HistGradientBoostingRegressor
-- **Features:** position, price, ownership, fixture difficulty, home/away context, rolling points, rolling minutes, rolling BPS, rolling ICT, rolling expected goal involvements, and games played
-- **Validation:** time-based validation over recent gameweeks
-- **Current tracked metrics:** MAE and RMSE for baseline and gradient boosting models
-- **Latest saved report:** Gradient Boosting MAE `0.947`, RMSE `1.871`; Ridge baseline MAE `0.990`, RMSE `1.890`; `20,704` training rows and `3,951` validation rows in `backend/reports/latest_evaluation.json`
-
-The backend can serve predictions from the live warehouse when available, or degrade gracefully to saved report artifacts so the demo remains usable.
-
-## API Routes
-
-- `GET /api/players`
-- `GET /api/predict`
-- `GET /api/model-status`
-- `POST /api/optimize`
-- `GET /api/differentials`
-- `GET /api/captain`
-- `GET /api/squad/{team_id}`
-- `GET /api/backtest`
-- `GET /health`
-
-## Local Run
-
-From the repo root:
+From the repository root:
 
 ```bash
 npm run app:start
 ```
 
-This starts the backend on `http://127.0.0.1:8000` and the frontend on `http://127.0.0.1:3000`.
+This starts FastAPI at `http://127.0.0.1:8000` and Next.js at `http://127.0.0.1:3000`.
 
-## Local Data And Training
-
-The backend scripts support both the configured warehouse and a local SQLite fallback. Use the local fallback when you want a quick run without depending on the remote database:
+To run the data pipeline against the configured database:
 
 ```bash
-backend/venv/bin/python backend/scripts/init_db.py --use-local-db
-backend/venv/bin/python backend/scripts/run_pipeline.py --use-local-db
-backend/venv/bin/python backend/scripts/train_model.py --use-local-db
+backend/venv/bin/python backend/scripts/init_db.py
+backend/venv/bin/python backend/scripts/run_pipeline.py
+backend/venv/bin/python backend/scripts/train_model.py
 ```
 
-If the configured warehouse is unreachable, the scripts fail with a clear message and point you to `--use-local-db`.
+For an isolated local SQLite run, add `--use-local-db` to each command.
 
 ## Verification
 
-Backend:
-
 ```bash
-backend/venv/bin/python -m pytest backend/tests/test_config.py backend/tests/test_database_repository.py backend/tests/test_optimizer.py
-```
-
-Frontend:
-
-```bash
+backend/venv/bin/python -m pytest backend/tests -q
 cd frontend && npm run build
 ```
 
-CI runs the same focused backend tests and frontend production build on pushes and pull requests.
+The API exposes `/health`, `/api/players`, `/api/predict`, `/api/model-status`, `/api/differentials`, `/api/captain`, and `/api/optimize`.
 
-## Deployment
+## Operating context
 
-This project uses a split deployment:
+Historical training rows combine player-gameweek history with current player context fields.
+Point-in-time data handling remains an active engineering focus.
 
-- deploy the `frontend` app separately
-- deploy the FastAPI backend from `backend/Dockerfile`
-- set `NEXT_PUBLIC_API_URL` to the deployed backend URL
-- restrict backend CORS with `ALLOWED_ORIGINS`
-- verify the frontend app and proxied API routes before sharing
+The recorded validation window covers five later gameweeks.
 
-Use `DEPLOYMENT_CHECKLIST.md` before sharing or updating the public link.
+The planning workflow carries player availability, fixture difficulty, budget, position, and transfer context.
 
-## Notes
-
-- Production env examples are included in `frontend/.env.production.example` and `backend/.env.production.example`.
-- Scheduled GitHub Actions refresh the FPL data and retrain the model.
-- The public demo is designed to stay readable even when live storage is unavailable by falling back to local report artifacts.
+The optimizer uses listed player prices and standard FPL squad constraints.
