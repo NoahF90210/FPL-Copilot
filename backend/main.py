@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from data.fpl_client import get_bootstrap, get_current_gameweek
+from data.player_catalogue import fetch_player_catalogue
 from database.repository import (
     fetch_latest_predictions,
     fetch_model_status,
@@ -34,7 +35,7 @@ DB_RETRY_SECONDS = 30.0
 DB_STATE_LOCK = Lock()
 STALE_PREDICTION_DAYS = 7
 LIVE_DATA_UNAVAILABLE_MESSAGE = (
-    "Live FPL prediction data is unavailable. Resume the Supabase database and wait for the scheduled refresh."
+    "Live FPL prediction data is unavailable. Forecasts are hidden until source data and the model refresh can be verified."
 )
 PUBLIC_SERVING_METADATA_KEYS = (
     "target_gameweek",
@@ -245,6 +246,15 @@ def _collection_metadata(players: list[dict], serving_mode: str) -> dict:
 # ---------------------------------------------------------------------------
 # /api/players
 # ---------------------------------------------------------------------------
+@app.get("/api/player-catalogue")
+def player_catalogue_endpoint():
+    try:
+        return fetch_player_catalogue()
+    except Exception:
+        logger.warning("Official FPL player catalogue is unavailable")
+        raise HTTPException(status_code=503, detail="Official FPL player stats are temporarily unavailable.") from None
+
+
 @app.get("/api/players")
 def players_endpoint(
     position: Optional[str] = None,
@@ -324,6 +334,10 @@ def model_status_endpoint():
                 serving_mode=status.get("prediction_serving_mode") or "unavailable",
                 model_version=status.get("model_version"),
             )
+            if status.get("forecast_unavailable_reason"):
+                metadata["serving_warning"] = status["forecast_unavailable_reason"]
+            elif status.get("serving_notice"):
+                metadata["serving_warning"] = status["serving_notice"]
             return {**status, **metadata}
         except Exception as exc:
             _mark_database_unavailable(exc)

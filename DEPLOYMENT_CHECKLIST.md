@@ -70,7 +70,7 @@ backend/venv/bin/python backend/scripts/train_model.py
 backend/venv/bin/python backend/scripts/verify_refresh.py
 ```
 
-Verification is read-only. It requires the official current-season roster and availability, a matching official fixture schedule, one complete forecast batch, the official next prediction target, successful current ingestion/training, and timestamps no more than 36 hours old. The API enforces the same batch checks on reads; PostgreSQL uses repeatable-read transactions and SQLite explicitly begins request snapshots so concurrent ingestion cannot relabel an in-flight forecast.
+Verification is read-only. It requires the official current-season roster and availability, a matching official fixture schedule, one complete forecast batch, the official next prediction target, successful current ingestion/training, and timestamps no more than 36 hours old. The API enforces the same original-batch integrity checks on reads, then filters out individual players whose current official availability no longer permits a recommendation. It does not disable unrelated forecasts or invent predictions for newly available players. Pipeline verification still requires a fully current availability snapshot. PostgreSQL uses repeatable-read transactions and SQLite explicitly begins request snapshots so concurrent ingestion cannot relabel an in-flight forecast.
 
 The refresh is scheduled daily at 09:15 UTC. The refresh and manual retraining workflows share a concurrency group. After authorized activation, inspect both workflow state and the actual latest run:
 

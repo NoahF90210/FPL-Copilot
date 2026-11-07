@@ -17,6 +17,7 @@ export default function PredictionStatus({
   isStale = false,
   warning,
   compact = false,
+  unavailableLabel,
 }: {
   mode: ServingMode;
   gameweek?: number | null;
@@ -26,6 +27,7 @@ export default function PredictionStatus({
   isStale?: boolean;
   warning?: string | null;
   compact?: boolean;
+  unavailableLabel?: string;
 }) {
   return (
     <div
@@ -44,7 +46,7 @@ export default function PredictionStatus({
             mode === "database" ? "text-fpl-green" : "text-yellow-200"
           )}
         >
-          {servingModeLabel(mode)}
+          {mode === "unavailable" && unavailableLabel ? unavailableLabel : servingModeLabel(mode)}
         </span>
         {gameweek ? <span className="text-xs font-semibold text-white">Target GW {gameweek}</span> : null}
         {generatedAt ? (

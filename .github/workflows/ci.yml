@@ -40,5 +40,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend dependencies
         run: npm ci
+      - name: Test player data boundaries
+        run: npm test
       - name: Build frontend
         run: npm run build

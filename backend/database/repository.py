@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import Select, desc, select
 from data.fpl_client import get_bootstrap, get_fixtures, get_prediction_gameweek
 from data.identity import INTEGRITY_VERSION, fixture_fingerprint, roster_fingerprint, validate_bootstrap, validate_fixtures
@@ -121,7 +122,8 @@ def verified_schedule(session: Session, ingestion: PipelineRun) -> list[dict]:
 
 
 def official_snapshot_matches(ingestion: PipelineRun, roster: list[Player],
-                             bootstrap: dict, fixtures: list[dict]) -> bool:
+                             bootstrap: dict, fixtures: list[dict], *,
+                             check_availability: bool = True) -> bool:
     season = validate_bootstrap(bootstrap)
     validate_fixtures(fixtures, bootstrap)
     metadata = ingestion.metadata_json
@@ -130,7 +132,9 @@ def official_snapshot_matches(ingestion: PipelineRun, roster: list[Player],
             or metadata.get("fixture_fingerprint") != fixture_fingerprint(fixtures)):
         return False
     official = {p["id"]: p for p in bootstrap["elements"]}
-    return all(p.id in official and p.status == official[p.id].get("status", "a") for p in roster)
+    return all(p.id in official and (
+        not check_availability or p.status == official[p.id].get("status", "a")
+    ) for p in roster)
 
 
 def utc_timestamp(value: datetime) -> datetime:
@@ -139,18 +143,28 @@ def utc_timestamp(value: datetime) -> datetime:
 
 def verified_prediction_batch(session: Session, *, bootstrap: dict | None = None,
                               fixtures: list[dict] | None = None,
-                              now: datetime | None = None, max_age_hours: float = 36) -> dict[int, ModelPrediction]:
+                              now: datetime | None = None, max_age_hours: float = 36,
+                              diagnostics: dict | None = None) -> dict[int, ModelPrediction]:
+    def reject(code: str, reason: str) -> dict:
+        if diagnostics is not None:
+            diagnostics.update(forecast_unavailable_code=code, forecast_unavailable_reason=reason)
+        return {}
+
     ingestion, roster = verified_roster(session)
     latest = latest_prediction_metadata(session)
     training = latest_pipeline_run(session, "training")
-    if ingestion is None or latest is None or training is None or training.status != "success":
-        return {}
+    if ingestion is None:
+        return reject("roster_unverified", "The stored roster has not passed identity verification. A complete data refresh is needed.")
+    if latest is None or training is None or training.status != "success":
+        return reject("training_unavailable", "No successful forecast batch is available for the verified roster. A model refresh is needed.")
     if not verified_schedule(session, ingestion):
-        return {}
+        return reject("schedule_unverified", "The stored fixture schedule has not passed verification. A complete data refresh is needed.")
     bootstrap = get_bootstrap() if bootstrap is None else bootstrap
     fixtures = get_fixtures() if fixtures is None else fixtures
-    if not official_snapshot_matches(ingestion, roster, bootstrap, fixtures):
-        return {}
+    # Availability is a per-player serving filter, not an identity/fixture change.
+    # Still verify the complete original batch before removing affected players.
+    if not official_snapshot_matches(ingestion, roster, bootstrap, fixtures, check_availability=False):
+        return reject("source_changed", "Official player identities or fixtures changed since the last refresh. Forecasts are hidden until a new refresh passes verification.")
     target = get_prediction_gameweek(bootstrap)
     now = utc_timestamp(now or datetime.now(timezone.utc))
 
@@ -160,7 +174,7 @@ def verified_prediction_batch(session: Session, *, bootstrap: dict | None = None
     if (not fresh(ingestion.completed_at) or not fresh(training.completed_at)
             or (training.metadata_json or {}).get("ingestion_run_id") != ingestion.id
             or (training.metadata_json or {}).get("model_version") != latest.model_version):
-        return {}
+        return reject("refresh_unverified", "The data/model refresh is older than the freshness limit, has an invalid timestamp, or does not share the same source run. A new refresh is needed.")
     rows = list(session.scalars(select(ModelPrediction).where(
         ModelPrediction.prediction_timestamp == latest.prediction_timestamp,
         ModelPrediction.model_version == latest.model_version,
@@ -169,7 +183,7 @@ def verified_prediction_batch(session: Session, *, bootstrap: dict | None = None
     eligible = {p.id: p for p in roster if p.status == "a"}
     if (len(rows) != len(eligible) or len(rows) != training.rows_inserted
             or {p.player_id for p in rows} != set(eligible)):
-        return {}
+        return reject("coverage_unverified", "The forecast batch does not cover the complete eligible roster. A new model refresh is needed.")
     fixture_counts = {p.team_id: sum(
         f.get("event") == target and not f["finished"] and p.team_id in (f["team_h"], f["team_a"])
         for f in fixtures
@@ -186,8 +200,24 @@ def verified_prediction_batch(session: Session, *, bootstrap: dict | None = None
                 or utc_timestamp(row.prediction_timestamp) > utc_timestamp(training.completed_at)
                 or not all(math.isfinite(value) and value >= 0
                            for value in (row.predicted_points, row.baseline_points))):
-            return {}
-    return {row.player_id: row for row in rows}
+            return reject("batch_unverified", "Forecast identity, target gameweek, fixture context, values or timestamps failed verification. Forecasts are hidden until a new refresh passes.")
+    official = {player["id"]: player for player in bootstrap["elements"]}
+    available_rows = {row.player_id: row for row in rows
+                      if official[row.player_id].get("status", "a") == "a"}
+    if not available_rows:
+        return reject("no_available_players", "No scored players are currently available in the official FPL feed. A model refresh is needed before new forecasts can be served.")
+    excluded = len(rows) - len(available_rows)
+    pending = sum(player.status != "a" and official[player.id].get("status", "a") == "a"
+                  for player in roster)
+    if diagnostics is not None and (excluded or pending):
+        diagnostics.update(
+            availability_excluded_count=excluded,
+            availability_pending_count=pending,
+            serving_notice=(f"Availability changed since training. Hidden forecasts: {excluded}. "
+                            f"Newly available players awaiting the next model refresh: {pending}. "
+                            "Other verified forecasts remain available."),
+        )
+    return available_rows
 
 
 def fetch_players_with_predictions(session: Session) -> list[dict[str, Any]]:
@@ -345,7 +375,13 @@ def save_json_report(path: Path, payload: dict[str, Any]) -> None:
 def fetch_model_status(session: Session) -> dict[str, Any]:
     latest_ingestion = latest_pipeline_run(session, "ingestion")
     latest_training = latest_pipeline_run(session, "training")
-    batch = verified_prediction_batch(session)
+    diagnostics: dict[str, Any] = {}
+    try:
+        batch = verified_prediction_batch(session, diagnostics=diagnostics)
+    except (httpx.HTTPError, ValueError, KeyError):
+        batch = {}
+        diagnostics.update(forecast_unavailable_code="official_data_unavailable",
+                           forecast_unavailable_reason="Official FPL data could not be reached or validated. Forecasts are hidden until verification recovers.")
     latest_prediction = next(iter(batch.values()), None)
     report = (
         latest_training.metadata_json
@@ -377,6 +413,7 @@ def fetch_model_status(session: Session) -> dict[str, Any]:
         "evaluation": report,
         "database_status": "connected",
         "prediction_serving_mode": "database" if latest_prediction else "unavailable",
+        **diagnostics,
     }
 
 

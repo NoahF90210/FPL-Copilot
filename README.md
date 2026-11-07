@@ -48,11 +48,23 @@ After a gameweek deadline passes, the target moves to the next official FPL game
 
 Player registrations are verified against the official current-season roster using both the season-local ID and FPL person code. Training and recent-form features use only completed, verified current-season fixture records. Unknown-season and unmapped historical records are retained for inspection but excluded; history is not guessed across season boundaries.
 
-A successful ingestion invalidates the previous forecast batch before its new player context can be served. Removed official history entries are retained but retired from feature construction. Until training succeeds, public forecasts are unavailable rather than mixing old predictions with new identities. Both API reads and the read-only `backend/scripts/verify_refresh.py` command check roster/display identity, availability, fixture schedule, target gameweek, complete prediction coverage, and timestamps (maximum age 36 hours). API reads use a consistent database snapshot throughout validation and fixture hydration.
+A successful ingestion invalidates the previous forecast batch before its new player context can be served. Removed official history entries are retained but retired from feature construction. Until training succeeds, public forecasts are unavailable rather than mixing old predictions with new identities. Both API reads and the read-only `backend/scripts/verify_refresh.py` command check roster/display identity, fixture schedule, target gameweek, complete stored prediction coverage, and timestamps (maximum age 36 hours). API reads use a consistent database snapshot throughout validation and fixture hydration.
+
+Availability changes are handled per player after the entire stored batch passes verification: newly injured, doubtful, suspended or unavailable players are removed immediately when the official feed refreshes (cached for up to five minutes), without disabling unaffected players' forecasts. Newly available players without a scored row wait for the next model refresh; no forecast is invented for them. The players page reports excluded/pending counts. Pipeline acceptance remains stricter: `verify_refresh.py` requires the ingested availability snapshot to match the current official feed, so a successful run proves the model has caught up.
 
 Players marked injured, suspended, unavailable, or doubtful are excluded from the scored recommendation pool.
 
-The app surfaces a clear unavailable state whenever the live data service is paused.
+The players page does not depend on forecast availability to show players. `/api/player-catalogue` reads descriptive stats directly from the official FPL API, independently of the database and model. The page initially renders a bundled, dated official roster, then refreshes stats and forecasts independently. If either live source is unavailable, the table stays browsable; saved stats are explicitly labeled **not live**, with their season and capture time. The snapshot never contains model predictions and is never used by prediction, captaincy or optimization endpoints.
+
+The availability panel shows database connectivity, ingestion/training outcomes and timestamps, the forecast request error, and a safe verification failure reason when available. A connected database is not described as paused merely because forecasts failed verification. The page retries every minute while visible and on window focus; manual retry is also available. Old or identity-mismatched forecasts are hidden rather than retained after a failed refresh.
+
+Refresh the bundled official roster before a release (especially at season rollover):
+
+```bash
+backend/venv/bin/python backend/scripts/export_player_catalogue.py
+```
+
+This reads the official API and updates `frontend/data/player-catalogue.json`; it does not write to the warehouse. Review the data diff before shipping. The bundled snapshot does not update itself on the deployed site; live catalogue requests supply fresh stats without a deployment. If all sources fail, the saved roster remains historical, not a guarantee of current data.
 
 ## Database access
 
@@ -82,10 +94,10 @@ For an isolated local SQLite run, add `--use-local-db` to each command.
 
 ```bash
 backend/venv/bin/python -m pytest backend/tests -q
-cd frontend && npm run build
+cd frontend && npm test && npm run build
 ```
 
-The API exposes `/health`, `/api/players`, `/api/predict`, `/api/model-status`, `/api/differentials`, `/api/captain`, and `/api/optimize`.
+The API exposes `/health`, `/api/player-catalogue`, `/api/players`, `/api/predict`, `/api/model-status`, `/api/differentials`, `/api/captain`, and `/api/optimize`.
 
 ## Operating context
 
