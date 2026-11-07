@@ -52,7 +52,17 @@ A successful ingestion invalidates the previous forecast batch before its new pl
 
 Players marked injured, suspended, unavailable, or doubtful are excluded from the scored recommendation pool.
 
-The app surfaces a clear unavailable state whenever the live data service is paused.
+The players page does not depend on forecast availability to show players. `/api/player-catalogue` reads descriptive stats directly from the official FPL API, independently of the database and model. The page initially renders a bundled, dated official roster, then refreshes stats and forecasts independently. If either live source is unavailable, the table stays browsable; saved stats are explicitly labeled **not live**, with their season and capture time. The snapshot never contains model predictions and is never used by prediction, captaincy or optimization endpoints.
+
+The availability panel shows database connectivity, ingestion/training outcomes and timestamps, the forecast request error, and a safe verification failure reason when available. A connected database is not described as paused merely because forecasts failed verification. The page retries every minute while visible and on window focus; manual retry is also available. Old or identity-mismatched forecasts are hidden rather than retained after a failed refresh.
+
+Refresh the bundled official roster before a release (especially at season rollover):
+
+```bash
+backend/venv/bin/python backend/scripts/export_player_catalogue.py
+```
+
+This reads the official API and updates `frontend/data/player-catalogue.json`; it does not write to the warehouse. Review the data diff before shipping. The bundled snapshot does not update itself on the deployed site; live catalogue requests supply fresh stats without a deployment. If all sources fail, the saved roster remains historical, not a guarantee of current data.
 
 ## Database access
 
@@ -82,10 +92,10 @@ For an isolated local SQLite run, add `--use-local-db` to each command.
 
 ```bash
 backend/venv/bin/python -m pytest backend/tests -q
-cd frontend && npm run build
+cd frontend && npm test && npm run build
 ```
 
-The API exposes `/health`, `/api/players`, `/api/predict`, `/api/model-status`, `/api/differentials`, `/api/captain`, and `/api/optimize`.
+The API exposes `/health`, `/api/player-catalogue`, `/api/players`, `/api/predict`, `/api/model-status`, `/api/differentials`, `/api/captain`, and `/api/optimize`.
 
 ## Operating context
 
