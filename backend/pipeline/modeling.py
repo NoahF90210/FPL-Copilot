@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from core.config import get_settings
 from data.fpl_client import get_bootstrap, get_prediction_gameweek
 from database.models import Fixture, ModelPrediction, Player, PlayerGameweekStat
-from database.repository import save_json_report, save_pipeline_run
+from data.identity import get_season_key
+from database.repository import save_json_report, save_pipeline_run, verified_roster
 
 try:
     import mlflow
@@ -38,40 +39,38 @@ FEATURE_COLUMNS = [
 ]
 
 
-def _build_training_dataframe(session: Session) -> pd.DataFrame:
+def _verified_history_dataframe(session: Session) -> pd.DataFrame:
+    # A season-local API ID alone is not a person identity. Require the code
+    # observed on that exact history ingestion, and completed current fixtures.
     stmt = (
         select(
-            PlayerGameweekStat.player_id,
-            PlayerGameweekStat.team_id,
-            PlayerGameweekStat.season,
-            PlayerGameweekStat.gameweek,
-            PlayerGameweekStat.minutes,
-            PlayerGameweekStat.total_points,
+            PlayerGameweekStat.player_id, PlayerGameweekStat.team_id,
+            PlayerGameweekStat.season, PlayerGameweekStat.gameweek,
+            PlayerGameweekStat.minutes, PlayerGameweekStat.total_points,
             PlayerGameweekStat.opponent_fdr,
         )
-        .order_by(
-            PlayerGameweekStat.player_id.asc(),
-            PlayerGameweekStat.season.asc(),
-            PlayerGameweekStat.gameweek.asc(),
+        .join(Player, Player.id == PlayerGameweekStat.player_id)
+        .join(Fixture, (Fixture.id == PlayerGameweekStat.fixture_id)
+              & (Fixture.season == PlayerGameweekStat.season))
+        .where(
+            Player.is_current.is_(True), Player.fpl_code.is_not(None),
+            PlayerGameweekStat.player_code == Player.fpl_code,
+            PlayerGameweekStat.is_current.is_(True),
+            PlayerGameweekStat.season == Player.season,
+            Fixture.is_current.is_(True), Fixture.finished.is_(True),
         )
+        .order_by(PlayerGameweekStat.player_id, PlayerGameweekStat.gameweek,
+                  Fixture.kickoff_time, Fixture.id)
     )
-    rows = session.execute(stmt).all()
-    if not rows:
-        return pd.DataFrame()
+    return pd.DataFrame(session.execute(stmt).all(), columns=[
+        "player_id", "team_id", "season", "gameweek", "minutes", "total_points", "opponent_fdr",
+    ])
 
-    df = pd.DataFrame(
-        rows,
-        columns=[
-            "player_id",
-            "team_id",
-            "season",
-            "gameweek",
-            "minutes",
-            "total_points",
-            "opponent_fdr",
-        ],
-    )
 
+def _build_training_dataframe(session: Session) -> pd.DataFrame:
+    df = _verified_history_dataframe(session)
+    if df.empty:
+        return df
     grouped = df.groupby("player_id", group_keys=False)
     df["games_played"] = grouped.cumcount()
     df["rolling_points_5"] = grouped["total_points"].transform(
@@ -80,94 +79,49 @@ def _build_training_dataframe(session: Session) -> pd.DataFrame:
     df["rolling_minutes_5"] = grouped["minutes"].transform(
         lambda values: values.shift(1).rolling(window=5, min_periods=1).mean()
     )
-
-    df = df[df["games_played"] >= 3].copy()
-    return df
+    return df[df["games_played"] >= 3].copy()
 
 
 def _build_next_gameweek_dataframe(session: Session) -> tuple[pd.DataFrame, int]:
-    players = pd.DataFrame(
-        session.execute(select(Player.id, Player.team_id, Player.status)).all(),
-        columns=["player_id", "team_id", "status"],
-    )
-    if players.empty:
-        return players, 1
-
-    hist = pd.DataFrame(
-        session.execute(
-            select(
-                PlayerGameweekStat.player_id,
-                PlayerGameweekStat.season,
-                PlayerGameweekStat.gameweek,
-                PlayerGameweekStat.total_points,
-                PlayerGameweekStat.minutes,
-            )
-        ).all(),
-        columns=["player_id", "season", "gameweek", "total_points", "minutes_hist"],
-    )
-
-    latest_gw = int(hist["gameweek"].max()) if not hist.empty else 0
-
-    if hist.empty:
-        players["games_played"] = 0
-        players["rolling_points_5"] = 0.0
-        players["rolling_minutes_5"] = 0.0
-    else:
-        grouped = hist.sort_values(["player_id", "season", "gameweek"]).groupby("player_id")
-        features = grouped.agg(
+    ingestion, roster = verified_roster(session)
+    if ingestion is None:
+        raise RuntimeError("No verified current roster. Run ingestion first.")
+    bootstrap = get_bootstrap()
+    season = get_season_key(bootstrap)
+    if ingestion.metadata_json["season"] != season:
+        raise RuntimeError("Official season changed. Run ingestion first.")
+    next_gameweek = get_prediction_gameweek(bootstrap)
+    players = pd.DataFrame([
+        dict(player_id=p.id, team_id=p.team_id, status=p.status,
+             player_code=p.fpl_code, season=p.season) for p in roster
+    ])
+    hist = _verified_history_dataframe(session)
+    if not hist.empty:
+        features = hist.groupby("player_id").agg(
             games_played=("gameweek", "count"),
             rolling_points_5=("total_points", lambda values: values.tail(5).mean()),
-            rolling_minutes_5=("minutes_hist", lambda values: values.tail(5).mean()),
+            rolling_minutes_5=("minutes", lambda values: values.tail(5).mean()),
         ).reset_index()
         players = players.merge(features, how="left", on="player_id")
+    else:
+        for column in ["games_played", "rolling_points_5", "rolling_minutes_5"]:
+            players[column] = 0.0
 
-    upcoming = pd.DataFrame(
-        session.execute(
-            select(
-                Fixture.gameweek,
-                Fixture.team_h,
-                Fixture.team_a,
-                Fixture.team_h_difficulty,
-                Fixture.team_a_difficulty,
-            )
-            .where(Fixture.finished.is_(False))
-            .order_by(Fixture.gameweek.asc(), Fixture.id.asc())
-        ).all(),
-        columns=["gameweek", "team_h", "team_a", "team_h_difficulty", "team_a_difficulty"],
-    )
-    api_target_gameweek = get_prediction_gameweek(get_bootstrap())
-    fixture_target_gameweek = latest_gw + 1
-    if not upcoming.empty:
-        fixture_target_gameweek = int(upcoming["gameweek"].dropna().to_numpy()[0])
-    next_gameweek = api_target_gameweek or fixture_target_gameweek
-    next_fixture_rows = []
+    fixtures = list(session.scalars(select(Fixture).where(
+        Fixture.season == season, Fixture.is_current.is_(True), Fixture.gameweek == next_gameweek,
+        Fixture.finished.is_(False),
+    ).order_by(Fixture.kickoff_time, Fixture.id)))
+    context = []
     for team_id in players["team_id"].unique():
-        team_fixtures = upcoming[(upcoming["team_h"] == team_id) | (upcoming["team_a"] == team_id)]
-        team_fixtures = team_fixtures[team_fixtures["gameweek"] >= next_gameweek]
-        if team_fixtures.empty:
-            next_fixture_rows.append({"team_id": team_id, "opponent_fdr": 3.0})
-            continue
-        next_fixture = team_fixtures.iloc[0]
-        is_home = int(next_fixture["team_h"] == team_id)
-        next_fixture_rows.append(
-            {
-                "team_id": team_id,
-                "opponent_fdr": float(
-                    next_fixture["team_h_difficulty"] if is_home else next_fixture["team_a_difficulty"]
-                ),
-            }
-        )
-
-    players = players.merge(pd.DataFrame(next_fixture_rows), how="left", on="team_id")
-    players.fillna(
-        {
-            "games_played": 0,
-            "rolling_points_5": 0.0,
-            "rolling_minutes_5": 0.0,
-            "opponent_fdr": 3.0,
-        },
-        inplace=True,
-    )
+        team_fixtures = [f for f in fixtures if team_id in (f.team_h, f.team_a)]
+        fixture = team_fixtures[0] if team_fixtures else None
+        difficulty = (fixture.team_h_difficulty if fixture.team_h == team_id
+                      else fixture.team_a_difficulty) if fixture else None
+        context.append(dict(team_id=team_id, opponent_fdr=float(difficulty or 3),
+                            target_fixture_count=len(team_fixtures)))
+    players = players.merge(pd.DataFrame(context), how="left", on="team_id")
+    players.fillna({"games_played": 0, "rolling_points_5": 0.0,
+                    "rolling_minutes_5": 0.0}, inplace=True)
     return players, next_gameweek
 
 
@@ -264,6 +218,9 @@ def _log_training_run_to_mlflow(
 
 def train_and_score(session: Session) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
+    ingestion, _ = verified_roster(session)
+    if ingestion is None:
+        raise RuntimeError("No verified current roster. Run ingestion first.")
     training_df = _build_training_dataframe(session)
     if training_df.empty:
         raise RuntimeError("Not enough historical data in the warehouse. Run ingestion first.")
@@ -301,6 +258,9 @@ def train_and_score(session: Session) -> dict[str, Any]:
         "baseline_version": BASELINE_VERSION,
         "feature_columns": FEATURE_COLUMNS,
         "primary_metric": "mae",
+        "season": ingestion.metadata_json["season"],
+        "ingestion_run_id": ingestion.id,
+        "history_policy": "verified_current_season_only",
         "validation_strategy": "later_gameweek_holdout",
         "validation_gameweeks": sorted(valid_df["gameweek"].unique().tolist()),
         "baseline": {
@@ -342,13 +302,14 @@ def train_and_score(session: Session) -> dict[str, Any]:
     scored_rows["baseline_points"] = (
         scored_rows[BASELINE_FEATURE].fillna(0.0).clip(lower=0.0)
     )
+    # A blank target week must not borrow a fixture from a later gameweek.
+    blank_week = scored_rows["target_fixture_count"] == 0
+    scored_rows.loc[blank_week, ["predicted_points", "baseline_points"]] = 0.0
     residuals = y_valid - model_preds
     confidence = max(float(residuals.std()), 0.5)
     prediction_timestamp = datetime.now(timezone.utc)
 
-    session.query(ModelPrediction).filter(ModelPrediction.model_version == MODEL_VERSION).delete(
-        synchronize_session=False
-    )
+    session.query(ModelPrediction).delete(synchronize_session=False)
 
     saved_predictions = []
     for row in scored_rows.itertuples():
@@ -361,6 +322,10 @@ def train_and_score(session: Session) -> dict[str, Any]:
             baseline_points=round(float(row.baseline_points), 3),
             confidence=confidence,
             metadata_json={
+                "season": row.season,
+                "player_code": int(row.player_code),
+                "ingestion_run_id": ingestion.id,
+                "target_fixture_count": int(row.target_fixture_count),
                 "games_played": int(row.games_played),
                 "rolling_points_5": float(row.rolling_points_5),
                 "rolling_minutes_5": float(row.rolling_minutes_5),

@@ -1,9 +1,16 @@
-name: Weekly Data Refresh
+name: Daily Data Refresh
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 9 * * 2"
+    - cron: "15 9 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fpl-warehouse-refresh
+  cancel-in-progress: false
 
 jobs:
   refresh:

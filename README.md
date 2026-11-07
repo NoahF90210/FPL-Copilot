@@ -42,15 +42,21 @@ The forecast supports player research, captaincy planning, squad construction, a
 
 The app reads forecasts from the live Supabase database.
 
-A scheduled GitHub Actions workflow refreshes official FPL data and retrains the model every Tuesday.
+A scheduled GitHub Actions workflow refreshes official FPL data and retrains the model daily at 09:15 UTC. Refresh and manual retraining share a concurrency group so they cannot write the warehouse simultaneously.
 
 After a gameweek deadline passes, the target moves to the next official FPL gameweek even if FPL is still finalizing the previous week's scores.
 
-At the start of a new season, recent player history carries forward from the prior season while current prices, clubs, fixtures, and availability come from the new season.
+Player registrations are verified against the official current-season roster using both the season-local ID and FPL person code. Training and recent-form features use only completed, verified current-season fixture records. Unknown-season and unmapped historical records are retained for inspection but excluded; history is not guessed across season boundaries.
+
+A successful ingestion invalidates the previous forecast batch before its new player context can be served. Removed official history entries are retained but retired from feature construction. Until training succeeds, public forecasts are unavailable rather than mixing old predictions with new identities. Both API reads and the read-only `backend/scripts/verify_refresh.py` command check roster/display identity, availability, fixture schedule, target gameweek, complete prediction coverage, and timestamps (maximum age 36 hours). API reads use a consistent database snapshot throughout validation and fixture hydration.
 
 Players marked injured, suspended, unavailable, or doubtful are excluded from the scored recommendation pool.
 
 The app surfaces a clear unavailable state whenever the live data service is paused.
+
+## Database access
+
+The browser accesses FastAPI, not the Supabase Data API. All seven warehouse tables have Row Level Security enabled on PostgreSQL and direct table privileges revoked from `anon`, `authenticated`, and `PUBLIC`. There are intentionally no permissive browser policies. The server-side table-owner connection remains able to ingest and serve data; never put that connection string in frontend configuration. Database initialization reapplies this boundary idempotently.
 
 ## Run locally
 
@@ -83,8 +89,7 @@ The API exposes `/health`, `/api/players`, `/api/predict`, `/api/model-status`, 
 
 ## Operating context
 
-Historical training rows combine player-gameweek history with current player context fields.
-Point-in-time data handling remains an active engineering focus.
+Historical training rows are limited to verified current-season player identities and completed fixtures. Cross-season carryover is deliberately disabled until a separately verified mapping is available. At a new season's start, forecasts remain unavailable until enough current-season history exists for training and validation.
 
 The recorded validation window covers five later gameweeks.
 

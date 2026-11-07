@@ -1,37 +1,27 @@
 from __future__ import annotations
 
-from _cli import prepare_backend_path
+import json
 
-prepare_backend_path()
-
-from database.repository import fetch_model_status
-from database.session import get_session, init_db
+from _cli import build_script_parser, configure_script_environment, prepare_backend_path
 
 
 def main() -> None:
-    init_db()
-    with get_session() as session:
-        status = fetch_model_status(session)
+    parser = build_script_parser("Verify official roster identity and forecast freshness without writing data.")
+    args = parser.parse_args()
+    configure_script_environment(args)
+    prepare_backend_path()
 
-    target_gameweek = status.get("latest_prediction_gameweek")
-    prediction_mode = status.get("prediction_serving_mode")
-    prediction_timestamp = status.get("latest_prediction_timestamp")
-    training_run = status.get("latest_training_run") or {}
-    prediction_count = training_run.get("rows_inserted")
+    from data.fpl_client import get_bootstrap, get_fixtures
+    from database.session import get_session
+    from pipeline.verify import verify_refresh
 
-    if prediction_mode != "database" or not target_gameweek or not prediction_timestamp or not prediction_count:
-        raise SystemExit(
-            "Refresh verification failed: the database does not contain a current prediction run."
-        )
-
-    print(
-        {
-            "status": "verified",
-            "target_gameweek": target_gameweek,
-            "prediction_timestamp": prediction_timestamp,
-            "predictions": prediction_count,
-        }
-    )
+    try:
+        bootstrap = get_bootstrap()
+        with get_session() as session:
+            result = verify_refresh(session, bootstrap, get_fixtures())
+    except (RuntimeError, ValueError) as exc:
+        parser.exit(1, f"Refresh verification failed: {exc}\n")
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

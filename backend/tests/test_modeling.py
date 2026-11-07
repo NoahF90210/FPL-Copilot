@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from database.models import Base, Fixture, ModelPrediction, Player, PlayerGameweekStat, Team
 from pipeline import modeling
+from factories import SEASON, record_snapshot
 
 
 def make_session() -> Session:
@@ -23,7 +24,7 @@ def test_training_features_use_only_prior_appearances():
         session.add(Team(id=1, name="Example FC", short_name="EX"))
         session.add(
             Player(
-                id=1,
+                id=1, fpl_code=10, season=SEASON, is_current=True,
                 first_name="Test",
                 second_name="Player",
                 web_name="Player",
@@ -40,9 +41,11 @@ def test_training_features_use_only_prior_appearances():
             (3, 8, 90),
             (4, 20, 90),
         ]:
+            session.add(Fixture(id=gameweek, season=SEASON, is_current=True, gameweek=gameweek,
+                                team_h=1, team_a=1, finished=True))
             session.add(
                 PlayerGameweekStat(
-                    player_id=1,
+                    player_id=1, player_code=10, season=SEASON, fixture_id=gameweek, is_current=True,
                     team_id=1,
                     gameweek=gameweek,
                     minutes=minutes,
@@ -65,7 +68,9 @@ def test_training_features_use_only_prior_appearances():
 
 
 def test_next_target_uses_next_unfinished_fixture_at_new_season_start(monkeypatch):
-    monkeypatch.setattr(modeling, "get_bootstrap", lambda: {})
+    monkeypatch.setattr(modeling, "get_bootstrap", lambda: {
+        "events": [{"deadline_time": "2026-08-15T11:00:00Z"}],
+    })
     monkeypatch.setattr(modeling, "get_prediction_gameweek", lambda bootstrap: 1)
 
     with make_session() as session:
@@ -74,7 +79,7 @@ def test_next_target_uses_next_unfinished_fixture_at_new_season_start(monkeypatc
                 Team(id=1, name="Example FC", short_name="EX"),
                 Team(id=2, name="Opponent FC", short_name="OP"),
                 Player(
-                    id=1,
+                    id=1, fpl_code=10, season=SEASON, is_current=True,
                     first_name="Test",
                     second_name="Player",
                     web_name="Player",
@@ -94,7 +99,7 @@ def test_next_target_uses_next_unfinished_fixture_at_new_season_start(monkeypatc
                     opponent_fdr=3.0,
                 ),
                 Fixture(
-                    id=1,
+                    id=1, season=SEASON, is_current=True,
                     gameweek=1,
                     finished=False,
                     team_h=1,
@@ -106,10 +111,13 @@ def test_next_target_uses_next_unfinished_fixture_at_new_season_start(monkeypatc
         )
         session.commit()
 
+        record_snapshot(session)
         frame, target_gameweek = modeling._build_next_gameweek_dataframe(session)
 
     assert target_gameweek == 1
     assert frame.iloc[0]["opponent_fdr"] == 2.0
+    assert frame.iloc[0]["games_played"] == 0
+    assert frame.iloc[0]["rolling_points_5"] == 0
 
 
 def test_public_training_path_is_ridge_with_recent_average_baseline(tmp_path, monkeypatch):
@@ -169,6 +177,12 @@ def test_public_training_path_is_ridge_with_recent_average_baseline(tmp_path, mo
         latest_predictions_path=tmp_path / "latest_predictions.json",
     )
 
+    scoring_frame["player_code"] = scoring_frame["player_id"] * 10
+    scoring_frame["season"] = SEASON
+    scoring_frame["target_fixture_count"] = 1
+    monkeypatch.setattr(modeling, "verified_roster", lambda session: (
+        SimpleNamespace(id=1, metadata_json={"season": SEASON}), [],
+    ))
     monkeypatch.setattr(modeling, "settings", test_settings)
     monkeypatch.setattr(modeling, "_build_training_dataframe", lambda session: training_frame)
     monkeypatch.setattr(

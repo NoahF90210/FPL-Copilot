@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -30,6 +30,9 @@ class Player(Base):
     __tablename__ = "players"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fpl_code: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    season: Mapped[str | None] = mapped_column(String(9), nullable=True)
+    is_current: Mapped[bool] = mapped_column(default=False, server_default=false())
     first_name: Mapped[str] = mapped_column(String(100))
     second_name: Mapped[str] = mapped_column(String(100))
     web_name: Mapped[str] = mapped_column(String(100), index=True)
@@ -70,6 +73,8 @@ class Fixture(Base):
     __tablename__ = "fixtures"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    season: Mapped[str | None] = mapped_column(String(9), nullable=True)
+    is_current: Mapped[bool] = mapped_column(default=False, server_default=false())
     gameweek: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     kickoff_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
     finished: Mapped[bool] = mapped_column(default=False)
@@ -91,6 +96,8 @@ class PlayerGameweekStat(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
+    player_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_current: Mapped[bool] = mapped_column(default=False, server_default=false())
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
     opponent_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     fixture_id: Mapped[int | None] = mapped_column(ForeignKey("fixtures.id"), nullable=True)

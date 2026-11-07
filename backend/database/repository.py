@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Select, desc, func, select
+from sqlalchemy import Select, desc, select
+from data.fpl_client import get_bootstrap, get_fixtures, get_prediction_gameweek
+from data.identity import INTEGRITY_VERSION, fixture_fingerprint, roster_fingerprint, validate_bootstrap, validate_fixtures
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
@@ -79,36 +82,128 @@ def latest_model_version(session: Session) -> str | None:
     return latest.model_version if latest else None
 
 
-def _latest_prediction_subquery():
-    latest_ts = (
-        select(
-            ModelPrediction.player_id,
-            func.max(ModelPrediction.prediction_timestamp).label("latest_prediction_timestamp"),
-        )
-        .group_by(ModelPrediction.player_id)
-        .subquery()
-    )
-    return latest_ts
+def verified_roster(session: Session) -> tuple[PipelineRun | None, list[Player]]:
+    ingestion = session.execute(
+        select(PipelineRun).where(
+            PipelineRun.run_type == "ingestion", PipelineRun.status == "success",
+        ).order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    metadata = ingestion.metadata_json if ingestion else None
+    if not isinstance(metadata, dict) or metadata.get("integrity_version") != INTEGRITY_VERSION:
+        return None, []
+    players = list(session.scalars(select(Player).where(Player.is_current.is_(True))))
+    positions = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
+    if not players or any(
+        p.season != metadata.get("season") or p.fpl_code is None
+        or p.position != positions.get(p.position_id)
+        or p.full_name != f"{p.first_name} {p.second_name}" for p in players
+    ):
+        return None, []
+    identities = [dict(id=p.id, code=p.fpl_code, first_name=p.first_name,
+                       second_name=p.second_name, team=p.team_id, element_type=p.position_id,
+                       web_name=p.web_name)
+                  for p in players]
+    if (len(players) != metadata.get("roster_count")
+            or roster_fingerprint(identities) != metadata.get("roster_fingerprint")):
+        return None, []
+    return ingestion, players
+
+
+def verified_schedule(session: Session, ingestion: PipelineRun) -> list[dict]:
+    rows = list(session.scalars(select(Fixture).where(Fixture.is_current.is_(True))))
+    if not rows or any(row.season != ingestion.metadata_json["season"] for row in rows):
+        return []
+    fixtures = [dict(id=f.id, event=f.gameweek, team_h=f.team_h, team_a=f.team_a,
+                     kickoff_time=f.kickoff_time, finished=f.finished,
+                     team_h_difficulty=f.team_h_difficulty, team_a_difficulty=f.team_a_difficulty)
+                for f in rows]
+    return fixtures if fixture_fingerprint(fixtures) == ingestion.metadata_json.get("fixture_fingerprint") else []
+
+
+def official_snapshot_matches(ingestion: PipelineRun, roster: list[Player],
+                             bootstrap: dict, fixtures: list[dict]) -> bool:
+    season = validate_bootstrap(bootstrap)
+    validate_fixtures(fixtures, bootstrap)
+    metadata = ingestion.metadata_json
+    if (metadata.get("season") != season
+            or metadata.get("roster_fingerprint") != roster_fingerprint(bootstrap["elements"])
+            or metadata.get("fixture_fingerprint") != fixture_fingerprint(fixtures)):
+        return False
+    official = {p["id"]: p for p in bootstrap["elements"]}
+    return all(p.id in official and p.status == official[p.id].get("status", "a") for p in roster)
+
+
+def utc_timestamp(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def verified_prediction_batch(session: Session, *, bootstrap: dict | None = None,
+                              fixtures: list[dict] | None = None,
+                              now: datetime | None = None, max_age_hours: float = 36) -> dict[int, ModelPrediction]:
+    ingestion, roster = verified_roster(session)
+    latest = latest_prediction_metadata(session)
+    training = latest_pipeline_run(session, "training")
+    if ingestion is None or latest is None or training is None or training.status != "success":
+        return {}
+    if not verified_schedule(session, ingestion):
+        return {}
+    bootstrap = get_bootstrap() if bootstrap is None else bootstrap
+    fixtures = get_fixtures() if fixtures is None else fixtures
+    if not official_snapshot_matches(ingestion, roster, bootstrap, fixtures):
+        return {}
+    target = get_prediction_gameweek(bootstrap)
+    now = utc_timestamp(now or datetime.now(timezone.utc))
+
+    def fresh(value: datetime | None) -> bool:
+        return value is not None and -timedelta(minutes=5) <= now - utc_timestamp(value) <= timedelta(hours=max_age_hours)
+
+    if (not fresh(ingestion.completed_at) or not fresh(training.completed_at)
+            or (training.metadata_json or {}).get("ingestion_run_id") != ingestion.id
+            or (training.metadata_json or {}).get("model_version") != latest.model_version):
+        return {}
+    rows = list(session.scalars(select(ModelPrediction).where(
+        ModelPrediction.prediction_timestamp == latest.prediction_timestamp,
+        ModelPrediction.model_version == latest.model_version,
+        ModelPrediction.target_gameweek == latest.target_gameweek,
+    )))
+    eligible = {p.id: p for p in roster if p.status == "a"}
+    if (len(rows) != len(eligible) or len(rows) != training.rows_inserted
+            or {p.player_id for p in rows} != set(eligible)):
+        return {}
+    fixture_counts = {p.team_id: sum(
+        f.get("event") == target and not f["finished"] and p.team_id in (f["team_h"], f["team_a"])
+        for f in fixtures
+    ) for p in roster}
+    for row in rows:
+        metadata = row.metadata_json or {}
+        player = eligible[row.player_id]
+        if (metadata.get("season") != player.season
+                or metadata.get("player_code") != player.fpl_code
+                or metadata.get("ingestion_run_id") != ingestion.id
+                or metadata.get("target_fixture_count") != fixture_counts[player.team_id]
+                or row.target_gameweek != target or not fresh(row.prediction_timestamp)
+                or utc_timestamp(row.prediction_timestamp) < utc_timestamp(ingestion.completed_at)
+                or utc_timestamp(row.prediction_timestamp) > utc_timestamp(training.completed_at)
+                or not all(math.isfinite(value) and value >= 0
+                           for value in (row.predicted_points, row.baseline_points))):
+            return {}
+    return {row.player_id: row for row in rows}
 
 
 def fetch_players_with_predictions(session: Session) -> list[dict[str, Any]]:
-    latest_ts = _latest_prediction_subquery()
-    stmt = (
-        select(Player, Team, ModelPrediction)
-        .join(Team, Team.id == Player.team_id)
-        .outerjoin(latest_ts, latest_ts.c.player_id == Player.id)
-        .outerjoin(
-            ModelPrediction,
-            (ModelPrediction.player_id == Player.id)
-            & (ModelPrediction.prediction_timestamp == latest_ts.c.latest_prediction_timestamp),
-        )
-    )
+    batch = verified_prediction_batch(session)
+    if not batch:
+        return []
+    stmt = select(Player, Team).join(Team, Team.id == Player.team_id).where(Player.id.in_(batch))
 
     players: list[dict[str, Any]] = []
-    for player, team, prediction in session.execute(stmt).all():
+    for player, team in session.execute(stmt).all():
+        prediction = batch[player.id]
         players.append(
             {
                 "id": player.id,
+                "player_code": player.fpl_code,
+                "season": player.season,
                 "name": player.web_name,
                 "full_name": player.full_name,
                 "team": team.name,
@@ -160,8 +255,10 @@ def fetch_upcoming_fixtures(
     session: Session,
     *,
     from_gameweek: int | None = None,
+    season: str | None = None,
 ) -> dict[int, list[dict[str, Any]]]:
-    stmt = select(Fixture).where(Fixture.finished.is_(False))
+    stmt = select(Fixture).where(Fixture.finished.is_(False), Fixture.season == season,
+                                 Fixture.is_current.is_(True))
     if from_gameweek is not None:
         stmt = stmt.where(Fixture.gameweek >= from_gameweek)
     stmt = stmt.order_by(Fixture.gameweek.asc(), Fixture.id.asc())
@@ -194,7 +291,8 @@ def hydrate_prediction_context(session: Session, players: Iterable[dict[str, Any
         if isinstance(target, int):
             target_gameweeks.append(target)
     target_gameweek = max(target_gameweeks) if target_gameweeks else None
-    team_fixtures = fetch_upcoming_fixtures(session, from_gameweek=target_gameweek)
+    season = player_rows[0].get("season") if player_rows else None
+    team_fixtures = fetch_upcoming_fixtures(session, from_gameweek=target_gameweek, season=season)
     hydrated = []
 
     for player in player_rows:
@@ -247,7 +345,8 @@ def save_json_report(path: Path, payload: dict[str, Any]) -> None:
 def fetch_model_status(session: Session) -> dict[str, Any]:
     latest_ingestion = latest_pipeline_run(session, "ingestion")
     latest_training = latest_pipeline_run(session, "training")
-    latest_prediction = latest_prediction_metadata(session)
+    batch = verified_prediction_batch(session)
+    latest_prediction = next(iter(batch.values()), None)
     report = (
         latest_training.metadata_json
         if latest_training and isinstance(latest_training.metadata_json, dict)
