@@ -14,6 +14,9 @@ export interface PredictionMetadata {
 export interface ModelStatus extends PredictionMetadata {
   forecast_unavailable_code?: string;
   forecast_unavailable_reason?: string;
+  serving_notice?: string;
+  availability_excluded_count?: number;
+  availability_pending_count?: number;
   latest_ingestion_run?: {
     completed_at?: string | null;
     status?: string;

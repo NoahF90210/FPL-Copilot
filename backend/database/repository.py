@@ -122,7 +122,8 @@ def verified_schedule(session: Session, ingestion: PipelineRun) -> list[dict]:
 
 
 def official_snapshot_matches(ingestion: PipelineRun, roster: list[Player],
-                             bootstrap: dict, fixtures: list[dict]) -> bool:
+                             bootstrap: dict, fixtures: list[dict], *,
+                             check_availability: bool = True) -> bool:
     season = validate_bootstrap(bootstrap)
     validate_fixtures(fixtures, bootstrap)
     metadata = ingestion.metadata_json
@@ -131,7 +132,9 @@ def official_snapshot_matches(ingestion: PipelineRun, roster: list[Player],
             or metadata.get("fixture_fingerprint") != fixture_fingerprint(fixtures)):
         return False
     official = {p["id"]: p for p in bootstrap["elements"]}
-    return all(p.id in official and p.status == official[p.id].get("status", "a") for p in roster)
+    return all(p.id in official and (
+        not check_availability or p.status == official[p.id].get("status", "a")
+    ) for p in roster)
 
 
 def utc_timestamp(value: datetime) -> datetime:
@@ -158,8 +161,10 @@ def verified_prediction_batch(session: Session, *, bootstrap: dict | None = None
         return reject("schedule_unverified", "The stored fixture schedule has not passed verification. A complete data refresh is needed.")
     bootstrap = get_bootstrap() if bootstrap is None else bootstrap
     fixtures = get_fixtures() if fixtures is None else fixtures
-    if not official_snapshot_matches(ingestion, roster, bootstrap, fixtures):
-        return reject("source_changed", "Official player identities, availability or fixtures changed since the last refresh. Forecasts are hidden until a new refresh passes verification.")
+    # Availability is a per-player serving filter, not an identity/fixture change.
+    # Still verify the complete original batch before removing affected players.
+    if not official_snapshot_matches(ingestion, roster, bootstrap, fixtures, check_availability=False):
+        return reject("source_changed", "Official player identities or fixtures changed since the last refresh. Forecasts are hidden until a new refresh passes verification.")
     target = get_prediction_gameweek(bootstrap)
     now = utc_timestamp(now or datetime.now(timezone.utc))
 
@@ -196,7 +201,23 @@ def verified_prediction_batch(session: Session, *, bootstrap: dict | None = None
                 or not all(math.isfinite(value) and value >= 0
                            for value in (row.predicted_points, row.baseline_points))):
             return reject("batch_unverified", "Forecast identity, target gameweek, fixture context, values or timestamps failed verification. Forecasts are hidden until a new refresh passes.")
-    return {row.player_id: row for row in rows}
+    official = {player["id"]: player for player in bootstrap["elements"]}
+    available_rows = {row.player_id: row for row in rows
+                      if official[row.player_id].get("status", "a") == "a"}
+    if not available_rows:
+        return reject("no_available_players", "No scored players are currently available in the official FPL feed. A model refresh is needed before new forecasts can be served.")
+    excluded = len(rows) - len(available_rows)
+    pending = sum(player.status != "a" and official[player.id].get("status", "a") == "a"
+                  for player in roster)
+    if diagnostics is not None and (excluded or pending):
+        diagnostics.update(
+            availability_excluded_count=excluded,
+            availability_pending_count=pending,
+            serving_notice=(f"Availability changed since training. Hidden forecasts: {excluded}. "
+                            f"Newly available players awaiting the next model refresh: {pending}. "
+                            "Other verified forecasts remain available."),
+        )
+    return available_rows
 
 
 def fetch_players_with_predictions(session: Session) -> list[dict[str, Any]]:
@@ -354,7 +375,7 @@ def save_json_report(path: Path, payload: dict[str, Any]) -> None:
 def fetch_model_status(session: Session) -> dict[str, Any]:
     latest_ingestion = latest_pipeline_run(session, "ingestion")
     latest_training = latest_pipeline_run(session, "training")
-    diagnostics: dict[str, str] = {}
+    diagnostics: dict[str, Any] = {}
     try:
         batch = verified_prediction_batch(session, diagnostics=diagnostics)
     except (httpx.HTTPError, ValueError, KeyError):

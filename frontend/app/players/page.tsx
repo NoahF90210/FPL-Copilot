@@ -189,7 +189,7 @@ export default function PlayersPage() {
         provenance={metadata.prediction_provenance}
         modelVersion={metadata.model_version}
         isStale={metadata.is_stale}
-        warning={hasForecasts ? metadata.serving_warning : forecastWarning}
+        warning={hasForecasts ? status?.serving_notice || metadata.serving_warning : forecastWarning}
         unavailableLabel="Forecasts unavailable"
         compact
       />}

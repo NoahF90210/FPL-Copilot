@@ -336,6 +336,8 @@ def model_status_endpoint():
             )
             if status.get("forecast_unavailable_reason"):
                 metadata["serving_warning"] = status["forecast_unavailable_reason"]
+            elif status.get("serving_notice"):
+                metadata["serving_warning"] = status["serving_notice"]
             return {**status, **metadata}
         except Exception as exc:
             _mark_database_unavailable(exc)

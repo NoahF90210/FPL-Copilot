@@ -279,7 +279,7 @@ def test_changed_official_context_reports_why_forecasts_are_hidden(warehouse, mo
 
     session, bootstrap = warehouse
     changed = official_data()[0]
-    changed["elements"][0]["status"] = "i"
+    changed["elements"][0]["web_name"] = "Changed identity"
     monkeypatch.setattr(repository, "get_bootstrap", lambda: changed)
     status = repository.fetch_model_status(session)
     assert status["database_status"] == "connected"
@@ -322,7 +322,7 @@ def test_model_status_http_preserves_verification_reason(warehouse, monkeypatch)
 
     session, _ = warehouse
     changed = official_data()[0]
-    changed["elements"][0]["status"] = "i"
+    changed["elements"][0]["web_name"] = "Changed identity"
     monkeypatch.setattr(repository, "get_bootstrap", lambda: changed)
 
     @contextmanager
@@ -338,3 +338,65 @@ def test_model_status_http_preserves_verification_reason(warehouse, monkeypatch)
     assert status["database_status"] == "connected"
     assert status["forecast_unavailable_code"] == "source_changed"
     assert status["serving_warning"] == status["forecast_unavailable_reason"]
+
+
+@pytest.mark.parametrize("new_status", ["i", "d", "s", "u", "n"])
+def test_availability_change_hides_only_affected_forecast(warehouse, monkeypatch, new_status):
+    from database import repository
+
+    session, _ = warehouse
+    changed = official_data()[0]
+    changed["elements"][0]["status"] = new_status
+    monkeypatch.setattr(repository, "get_bootstrap", lambda: changed)
+    assert {p["id"] for p in fetch_latest_predictions(session)} == {449}
+    status = repository.fetch_model_status(session)
+    assert status["prediction_serving_mode"] == "database"
+    assert status["availability_excluded_count"] == 1
+    assert status["availability_pending_count"] == 0
+    assert "Other verified forecasts remain available" in status["serving_notice"]
+    # Refresh acceptance remains strict: the pipeline must catch up with the official feed.
+    with pytest.raises(RuntimeError, match="official snapshot"):
+        verify_refresh(session, changed, official_data()[1])
+
+
+def test_newly_available_player_waits_for_model_without_hiding_other_forecasts(warehouse, monkeypatch):
+    from database import repository
+
+    session, _ = warehouse
+    data = official_data()
+    data[0]["elements"][0]["status"] = "s"
+    ingest_official_data(monkeypatch, session, data)
+    modeling.train_and_score(session)
+    monkeypatch.setattr(repository, "get_bootstrap", lambda: official_data()[0])
+    assert {p["id"] for p in fetch_latest_predictions(session)} == {449}
+    status = repository.fetch_model_status(session)
+    assert status["prediction_serving_mode"] == "database"
+    assert status["availability_pending_count"] == 1
+    assert status["availability_excluded_count"] == 0
+    assert session.query(ModelPrediction).count() == 1
+
+
+def test_unavailable_player_filter_does_not_mask_corrupt_batch(warehouse, monkeypatch):
+    from database import repository
+
+    session, _ = warehouse
+    changed = official_data()[0]
+    changed["elements"][0]["status"] = "i"
+    monkeypatch.setattr(repository, "get_bootstrap", lambda: changed)
+    affected = session.query(ModelPrediction).filter_by(player_id=606).one()
+    affected.metadata_json = {**affected.metadata_json, "player_code": 123}
+    session.commit()
+    assert fetch_latest_predictions(session) == []
+    assert repository.fetch_model_status(session)["forecast_unavailable_code"] == "batch_unverified"
+
+
+def test_no_scored_player_available_reports_clear_reason(warehouse, monkeypatch):
+    from database import repository
+
+    session, _ = warehouse
+    changed = official_data()[0]
+    for player in changed["elements"]:
+        player["status"] = "i"
+    monkeypatch.setattr(repository, "get_bootstrap", lambda: changed)
+    assert fetch_latest_predictions(session) == []
+    assert repository.fetch_model_status(session)["forecast_unavailable_code"] == "no_available_players"
