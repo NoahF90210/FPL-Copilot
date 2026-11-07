@@ -17,10 +17,17 @@ def secure_warehouse_tables(connection: Connection) -> list[str]:
     )))
     recipients = ", ".join(["PUBLIC", *(quote(role) for role in roles)])
     tables = sorted(Base.metadata.tables)
+    secured = set(connection.scalars(text(
+        "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = :schema AND c.relrowsecurity"
+    ), {"schema": schema}))
     for name in tables:
         target = f"{quote(schema)}.{quote(name)}"
-        # No permissive policies: the application uses its server-side owner
-        # connection. Table owners retain access; Data API roles do not need it.
-        connection.execute(text(f"ALTER TABLE {target} ENABLE ROW LEVEL SECURITY"))
+        # Repeating ALTER takes an exclusive lock even when RLS is already on.
+        # Avoid blocking/deadlocking live forecast readers on daily startup.
+        if name not in secured:
+            connection.execute(text(f"ALTER TABLE {target} ENABLE ROW LEVEL SECURITY"))
+        # No permissive policies: owner access stays server-side. Always revoke
+        # ordinary-role grants, including grants restored since the last startup.
         connection.execute(text(f"REVOKE ALL PRIVILEGES ON TABLE {target} FROM {recipients}"))
     return tables
