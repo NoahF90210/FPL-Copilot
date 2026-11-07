@@ -3,6 +3,13 @@ name: Manual Model Retrain
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: fpl-warehouse-refresh
+  cancel-in-progress: false
+
 jobs:
   retrain:
     runs-on: ubuntu-latest
@@ -27,6 +34,9 @@ jobs:
       - name: Retrain model from warehouse data
         working-directory: backend
         run: python scripts/train_model.py
+      - name: Verify current roster and forecast freshness
+        working-directory: backend
+        run: python scripts/verify_refresh.py
       - name: Upload refreshed reports
         uses: actions/upload-artifact@v4
         with:

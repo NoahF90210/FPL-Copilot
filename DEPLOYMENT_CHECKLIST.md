@@ -53,7 +53,35 @@ Backend:
 - Confirm the service exposes port `8000` or the platform-equivalent web port.
 - Confirm CORS allows the production frontend only.
 
-## 4. Smoke test the live app
+## 4. Activate and verify the data refresh
+
+Before the first production run of the identity upgrade:
+
+- Back up the production database and record the deployed commit. Do not treat a local SQLite check as a PostgreSQL migration test.
+- Verify all seven warehouse tables have RLS enabled and no table privileges for `anon`, `authenticated`, or `PUBLIC`. The browser uses FastAPI; do not add permissive Data API policies to silence an unavailable state. Verify denial with ordinary roles and separately confirm the server-side owner can still ingest and serve.
+- Test the additive migration on a restored database first. Existing identities and statistics remain unverified until a complete official ingestion succeeds; legacy history is retained, not guessed or deleted.
+- Run ingestion, training, and verification against the **same** configured database. Successful ingestion intentionally clears old forecasts; if training fails, the app remains unavailable rather than serving a mismatched batch.
+- Do not enable a default-branch schedule until the fixed code is on that branch. GitHub schedules use the default branch, not an unmerged feature branch.
+
+```bash
+backend/venv/bin/python backend/scripts/init_db.py
+backend/venv/bin/python backend/scripts/run_pipeline.py
+backend/venv/bin/python backend/scripts/train_model.py
+backend/venv/bin/python backend/scripts/verify_refresh.py
+```
+
+Verification is read-only. It requires the official current-season roster and availability, a matching official fixture schedule, one complete forecast batch, the official next prediction target, successful current ingestion/training, and timestamps no more than 36 hours old. The API enforces the same batch checks on reads; PostgreSQL uses repeatable-read transactions and SQLite explicitly begins request snapshots so concurrent ingestion cannot relabel an in-flight forecast.
+
+The refresh is scheduled daily at 09:15 UTC. The refresh and manual retraining workflows share a concurrency group. After authorized activation, inspect both workflow state and the actual latest run:
+
+```bash
+gh workflow view daily-data-refresh.yml --repo NoahF90210/FPL-Copilot
+gh run list --repo NoahF90210/FPL-Copilot --workflow daily-data-refresh.yml --limit 3
+```
+
+GitHub can automatically disable public-repository schedules after 60 days without repository activity. Re-enabling is an external operation, not an automatic side effect of changing the cron expression. Check workflow state before presentations; use the full refresh workflow, not retraining alone, if the roster is old.
+
+## 5. Smoke test the live app
 
 Open these frontend pages:
 
@@ -92,7 +120,7 @@ For `/health`, `/api/model-status`, `/api/players`, `/api/predict`, `/api/captai
 Require `serving_mode=database` and `prediction_provenance=trained_model` for a usable public forecast.
 If the database is unavailable or the forecast is stale, the app must show an unavailable or stale state and must not substitute old or synthetic output.
 
-## 5. Exercise degraded serving locally
+## 6. Exercise degraded serving locally
 
 Before deployment, start the backend against a deliberately unreachable local database endpoint without changing any env file:
 
@@ -114,7 +142,7 @@ Then verify:
 
 Stop the local process after the check. This proves only the degraded unavailable-data path.
 
-## 6. Polish pass before sharing
+## 7. Polish pass before sharing
 
 - Confirm the homepage explains the project clearly in under 30 seconds.
 - Confirm the optimizer reads like a transfer planner, not a raw team dump.
@@ -124,7 +152,7 @@ Stop the local process after the check. This proves only the degraded unavailabl
 - Confirm the GitHub README includes the live URL and current screenshots.
 - Confirm GitHub repository metadata has a short description, homepage, and relevant topics.
 
-## 7. Confirm the deployed boundary
+## 8. Confirm the deployed boundary
 
 A local test or build does **not** prove the public deployment is repaired. On the actual frontend domain, confirm:
 
@@ -138,7 +166,7 @@ A local test or build does **not** prove the public deployment is repaired. On t
 
 Record the exact deployed commit, frontend URL, backend URL, check time, and response samples before sharing the link.
 
-## 8. Share
+## 9. Share
 
 - Add the live URL to applications and the GitHub repository homepage field.
 - Keep one screenshot of the dashboard and one screenshot of the optimizer ready for applications.

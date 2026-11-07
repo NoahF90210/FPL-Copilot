@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from data.fpl_client import get_bootstrap, get_current_gameweek, get_element_summary, get_fixtures
-from database.models import Fixture, Player, PlayerGameweekStat, Team, TeamGameweekStat
+from data.identity import INTEGRITY_VERSION, fixture_fingerprint, roster_fingerprint, validate_bootstrap, validate_fixtures
+from database.models import Fixture, ModelPrediction, Player, PlayerGameweekStat, Team, TeamGameweekStat
 from database.repository import save_pipeline_run, upsert_model
 
 
@@ -16,17 +17,6 @@ SOURCE_ENDPOINTS = [
     "/fixtures",
     "/element-summary/{player_id}",
 ]
-
-
-def get_season_key(bootstrap: dict[str, Any]) -> str:
-    first_deadline = next(
-        (event.get("deadline_time") for event in bootstrap.get("events", []) if event.get("deadline_time")),
-        None,
-    )
-    if not first_deadline:
-        return "unknown"
-    start_year = datetime.fromisoformat(first_deadline.replace("Z", "+00:00")).year
-    return f"{start_year}/{str(start_year + 1)[-2:]}"
 
 
 def _to_float(value: Any) -> float:
@@ -46,9 +36,22 @@ def run_ingestion(session: Session) -> dict[str, Any]:
         bootstrap = get_bootstrap()
         fixtures = get_fixtures()
         current_gameweek = get_current_gameweek(bootstrap)
-        season = get_season_key(bootstrap)
-        metadata["current_gameweek"] = current_gameweek
-        metadata["season"] = season
+        season = validate_bootstrap(bootstrap)
+        validate_fixtures(fixtures, bootstrap)
+        metadata.update({
+            "current_gameweek": current_gameweek, "season": season,
+            "integrity_version": INTEGRITY_VERSION,
+            "roster_fingerprint": roster_fingerprint(bootstrap["elements"]),
+            "roster_count": len(bootstrap["elements"]),
+            "fixture_fingerprint": fixture_fingerprint(fixtures),
+        })
+        # This transaction publishes the entire roster or nothing. Retain old rows
+        # for inspection, but never let absent registrations enter recommendations.
+        session.query(Player).update({Player.is_current: False}, synchronize_session="fetch")
+        session.query(Fixture).update({Fixture.is_current: False}, synchronize_session="fetch")
+        session.query(PlayerGameweekStat).update(
+            {PlayerGameweekStat.is_current: False}, synchronize_session="fetch",
+        )
 
         for team in bootstrap["teams"]:
             _, created = upsert_model(
@@ -75,6 +78,7 @@ def run_ingestion(session: Session) -> dict[str, Any]:
 
         for player in players:
             defaults = {
+                "fpl_code": player["code"], "season": season, "is_current": True,
                 "first_name": player["first_name"],
                 "second_name": player["second_name"],
                 "web_name": player["web_name"],
@@ -118,6 +122,7 @@ def run_ingestion(session: Session) -> dict[str, Any]:
                 session,
                 Fixture,
                 {
+                    "season": season, "is_current": True,
                     "gameweek": fixture.get("event"),
                     "kickoff_time": fixture.get("kickoff_time"),
                     "finished": bool(fixture.get("finished")),
@@ -150,13 +155,19 @@ def run_ingestion(session: Session) -> dict[str, Any]:
 
         for player in players:
             summary = get_element_summary(player["id"])
-            for history in summary.get("history", []):
+            if not isinstance(summary.get("history"), list):
+                raise ValueError(f"Missing official history for registration {player['id']}.")
+            seen_fixtures = set()
+            for history in summary["history"]:
                 gw = history.get("round")
                 if not gw:
                     continue
 
                 fixture_id = history.get("fixture")
                 fixture = fixture_lookup.get(fixture_id) if fixture_id else None
+                if fixture is None or fixture.gameweek != gw or fixture_id in seen_fixtures:
+                    raise ValueError(f"Invalid history fixture for registration {player['id']}.")
+                seen_fixtures.add(fixture_id)
                 opponent_fdr = None
                 if fixture is not None:
                     opponent_fdr = (
@@ -166,7 +177,8 @@ def run_ingestion(session: Session) -> dict[str, Any]:
                     )
 
                 defaults = {
-                    "team_id": player["team"],
+                    "player_code": player["code"], "is_current": True,
+                    "team_id": fixture.team_h if history.get("was_home") else fixture.team_a,
                     "opponent_team_id": history.get("opponent_team"),
                     "gameweek": gw,
                     "was_home": bool(history.get("was_home")),
@@ -242,6 +254,9 @@ def run_ingestion(session: Session) -> dict[str, Any]:
             rows_inserted += int(created)
             rows_updated += int(not created)
 
+        # Context and forecasts must not span different roster snapshots. If
+        # training later fails, serve unavailable rather than mismatched advice.
+        session.query(ModelPrediction).delete(synchronize_session=False)
         save_pipeline_run(
             session,
             run_type="ingestion",
@@ -257,6 +272,8 @@ def run_ingestion(session: Session) -> dict[str, Any]:
         return {
             "status": "success",
             "current_gameweek": current_gameweek,
+            "season": season,
+            "roster_count": len(players),
             "rows_inserted": rows_inserted,
             "rows_updated": rows_updated,
         }
